@@ -1283,8 +1283,8 @@ impl DatabaseManager {
     pub async fn get_speaker_from_embedding(
         &self,
         embedding: &[f32],
+        speaker_threshold: f32,
     ) -> Result<Option<Speaker>, SqlxError> {
-        let speaker_threshold = 0.55;
         let bytes: &[u8] = embedding.as_bytes();
 
         // First try matching against stored embeddings (up to 10 per speaker)
@@ -1321,6 +1321,21 @@ impl DatabaseManager {
         .bind(speaker_threshold)
         .fetch_optional(&self.pool)
         .await?;
+
+        if speaker.is_none() {
+            // Log closest distance if we didn't match anything
+            let closest: Option<(Option<f64>,)> = sqlx::query_as(
+                "SELECT MIN(vec_distance_cosine(embedding, vec_f32(?1))) as dist
+                 FROM speaker_embeddings"
+            )
+            .bind(bytes)
+            .fetch_optional(&self.pool)
+            .await?;
+
+            if let Some((Some(dist),)) = closest {
+                tracing::debug!("no speaker match. closest distance: {:.3} (threshold: {:.3})", dist, speaker_threshold);
+            }
+        }
 
         Ok(speaker)
     }
@@ -1450,15 +1465,14 @@ impl DatabaseManager {
         Ok(())
     }
 
-    /// Get named speakers with non-null centroids for seeding the embedding manager.
+    /// Get speakers with non-null centroids for seeding the embedding manager.
     /// Returns (speaker_id, name, centroid as Vec<f32>).
-    pub async fn get_named_speakers_with_centroids(
+    pub async fn get_speakers_with_centroids(
         &self,
     ) -> Result<Vec<(i64, String, Vec<f32>)>, SqlxError> {
         let rows: Vec<(i64, String, Vec<u8>)> = sqlx::query_as(
-            "SELECT id, name, centroid FROM speakers \
-             WHERE name IS NOT NULL AND name != '' \
-             AND centroid IS NOT NULL \
+            "SELECT id, COALESCE(name, 'Speaker ' || id) as name, centroid FROM speakers \
+             WHERE centroid IS NOT NULL \
              AND (hallucination IS NULL OR hallucination = 0)",
         )
         .fetch_all(&self.pool)

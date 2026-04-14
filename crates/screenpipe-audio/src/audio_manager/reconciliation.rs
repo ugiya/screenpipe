@@ -662,7 +662,7 @@ async fn extract_speaker_id(
 
     let embedding = best_embedding?;
 
-    match get_or_create_speaker_from_embedding(db, &embedding).await {
+    match get_or_create_speaker_from_embedding(db, &embedding, false).await {
         Ok(speaker) => {
             debug!(
                 "reconciliation: matched speaker id={} for batch",

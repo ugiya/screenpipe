@@ -840,7 +840,7 @@ mod tests {
 
         let sample_embedding = vec![0.1; 512];
         let speaker = db
-            .get_speaker_from_embedding(&sample_embedding)
+            .get_speaker_from_embedding(&sample_embedding, 0.55)
             .await
             .unwrap();
         assert_eq!(speaker.unwrap().id, 1);

@@ -81,7 +81,8 @@ pub async fn process_transcription_result(
         debug!("empty speaker embedding; storing transcript without speaker");
         None
     } else {
-        let speaker = get_or_create_speaker_from_embedding(db, &result.speaker_embedding).await?;
+        let is_output = matches!(result.input.device.device_type, crate::core::device::DeviceType::Output);
+        let speaker = get_or_create_speaker_from_embedding(db, &result.speaker_embedding, is_output).await?;
         debug!("detected speaker id={}", speaker.id);
         Some(speaker.id)
     };
@@ -183,8 +184,10 @@ pub async fn process_transcription_result(
 pub async fn get_or_create_speaker_from_embedding(
     db: &DatabaseManager,
     embedding: &[f32],
+    is_output: bool,
 ) -> Result<Speaker, anyhow::Error> {
-    let speaker = db.get_speaker_from_embedding(embedding).await?;
+    let threshold = if is_output { 0.65 } else { 0.55 };
+    let speaker = db.get_speaker_from_embedding(embedding, threshold).await?;
     if let Some(speaker) = speaker {
         debug!(
             "matched speaker id={} name={:?}",
