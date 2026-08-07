@@ -2288,7 +2288,7 @@ export function StandaloneChat({ className }: { className?: string } = {}) {
                   retryPrompt: lastUserMessageRef.current || undefined,
                 } : m)
               );
-            } else if (errorStr.includes("api_error") || errorStr.includes("Internal server error") || /\b5\d\d\b/.test(errorStr)) {
+            } else if (errorStr.includes("api_error") || errorStr.includes("server_error") || errorStr.includes("Internal server error") || /\b5\d\d\b/.test(errorStr)) {
               // Upstream API 5xx — SDK already exhausted its auto-retry attempts
               setMessages((prev) =>
                 prev.map((m) => m.id === msgId ? {
