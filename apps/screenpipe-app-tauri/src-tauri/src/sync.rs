@@ -432,6 +432,27 @@ pub async fn auto_start_archive(app: &AppHandle) {
 
 /// Auto-start local data retention on app launch if previously enabled.
 pub async fn auto_start_retention(app: &AppHandle) {
+    // FORK-LOCAL PATCH (personal build): never auto-start the deleting task.
+    //
+    // The gate patch in recording.rs forces recording ON but deliberately does
+    // NOT touch `local_plan_policy()`. That leaves one hazard: plan policy is
+    // computed from cached evidence in store.bin, and `has_verified_free_plan`
+    // has no staleness limit — a leftover account identity plus an old verified
+    // free entitlement blob evaluates to VerifiedFree offline, forever. If that
+    // happened, the code below would force 7-day RetentionMode::All over an
+    // archive going back months, with no prompt and no undo.
+    //
+    // Auto-deletion is not wanted on this machine under any plan, so refuse it
+    // unconditionally rather than depend on plan evidence staying Unknown.
+    // Manual cleanup stays available; only the automatic task is disabled.
+    // Re-apply after every upstream sync; see
+    // docs/local-build-account-gate-analysis.md.
+    const FORK_DISABLE_AUTO_RETENTION: bool = true;
+    if FORK_DISABLE_AUTO_RETENTION {
+        tracing::info!("fork-local: automatic retention disabled; nothing will be deleted");
+        return;
+    }
+
     let settings = match SettingsStore::get(app) {
         Ok(Some(s)) => s,
         _ => return,

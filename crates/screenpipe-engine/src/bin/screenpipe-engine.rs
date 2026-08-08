@@ -495,7 +495,10 @@ async fn main() -> anyhow::Result<()> {
     screenpipe_engine::cli_reminder::spawn();
 
     // Initialize Sentry only if telemetry is enabled
-    let _sentry_guard = if config.analytics_enabled {
+    // FORK-LOCAL PATCH (personal build): never. The desktop app runs the engine
+    // in-process so this binary's Sentry is unreachable from the app, but the
+    // CLI uses it. Upstream condition: `config.analytics_enabled`.
+    let _sentry_guard = if false {
         let sentry_release_name_append = env::var("SENTRY_RELEASE_NAME_APPEND").unwrap_or_default();
         let release_name = format!(
             "{}{}",

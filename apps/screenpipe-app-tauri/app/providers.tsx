@@ -104,12 +104,12 @@ export const Providers = forwardRef<
           ? { bootstrap: { distinctID: cachedAnalyticsId, isIdentifiedID: true } }
           : {}),
       });
-      // sync opt-in/out with cached preference on every boot
-      if (cachedEnabled === false) {
-        posthog.opt_out_capturing();
-      } else {
-        posthog.opt_in_capturing();
-      }
+      // FORK-LOCAL PATCH (personal build): always opt out. Upstream calls
+      // opt_in_capturing() whenever the cached preference is anything but
+      // false, which would immediately undo opt_out_capturing_by_default above
+      // — a stale localStorage value is enough to re-enable capture.
+      // Upstream: if (cachedEnabled === false) opt_out else opt_in.
+      posthog.opt_out_capturing();
       // The cached preference above is the only SYNCHRONOUS signal available.
       // An automated environment (CI, SCREENPIPE_DISABLE_TELEMETRY) is known
       // only to Rust, so ask for it and opt out as soon as it answers. This

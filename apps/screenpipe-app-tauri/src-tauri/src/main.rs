@@ -526,7 +526,9 @@ async fn main() {
         }
     });
     // Helper: look up a bool key in the store JSON (check both top-level and nested "settings")
-    let store_bool = |key: &str| -> Option<bool> {
+    // Unused after the fork-local telemetry patch below; kept so reverting is a
+    // one-line change rather than restoring a deleted closure.
+    let _store_bool = |key: &str| -> Option<bool> {
         store_json.as_ref().and_then(|data| {
             data.get(key).and_then(|v| v.as_bool()).or_else(|| {
                 data.get("settings")
