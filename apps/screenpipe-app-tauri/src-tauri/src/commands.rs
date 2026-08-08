@@ -1008,7 +1008,13 @@ pub async fn set_cloud_token(
         })
     };
     if let Some((pipe_manager, enforce_free_plan_retention)) = server_handles {
-        enforce_free_plan_retention.store(is_free_plan, std::sync::atomic::Ordering::SeqCst);
+        // FORK-LOCAL PATCH (personal build): never arm the live retention
+        // atomic. Upstream stores `is_free_plan`, so an account refresh — which
+        // AuthGuard performs on a timer and on window focus, without any
+        // explicit sign-in — could switch destructive deletion on mid-session.
+        // The pipe cap below is intentionally left untouched.
+        let _ = is_free_plan;
+        enforce_free_plan_retention.store(false, std::sync::atomic::Ordering::SeqCst);
         let mut pipe_manager = pipe_manager.lock().await;
         if pipe_manager.set_max_non_template_pipes(restrict_paid_features.then_some(2)) {
             pipe_manager

@@ -543,9 +543,12 @@ async fn main() {
     // still says analyticsEnabled=true cannot re-enable Sentry/PostHog.
     // Upstream: store_bool("analyticsEnabled").map(|e| !e).unwrap_or(false) || env.
     let telemetry_disabled = true;
-    // The webview gets this same decision through the
-    // `is_telemetry_disabled_by_env` command (see commands.rs); it cannot read
-    // the process env itself.
+    // NOTE (fork): upstream's comment claimed the webview receives "this same
+    // decision" via the `is_telemetry_disabled_by_env` command. It does not —
+    // that command returns the env-only answer from
+    // screenpipe_engine::analytics::telemetry_disabled_by_env, which this fork
+    // leaves unchanged. The webview is silenced separately and unconditionally
+    // in app/providers.tsx, not by this variable.
 
     let app_version = env!("CARGO_PKG_VERSION");
     let sentry_guard = if !telemetry_disabled {

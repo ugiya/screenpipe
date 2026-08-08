@@ -83,7 +83,16 @@ export function resolveFreePlanRetentionTransition(
   isVerifiedFreePlan: boolean,
   isVerifiedPaidPlan: boolean,
 ): FreePlanRetentionTransition {
-  if (isVerifiedFreePlan) {
+  // FORK-LOCAL PATCH (personal build): never emit the "enforce" transition.
+  // Upstream returns it whenever the account resolves to verified-free, and the
+  // caller then persists localRetentionEnabled=true / 7 days / mode "all" and
+  // pushes that to the engine — independently of the account gate, on any
+  // background account refresh. The engine refuses deletion anyway
+  // (retention.rs), but this stops the destructive preference from ever being
+  // written into the settings store in the first place.
+  // Re-apply after every upstream sync.
+  const FORK_NEVER_ENFORCE_FREE_RETENTION = true;
+  if (isVerifiedFreePlan && !FORK_NEVER_ENFORCE_FREE_RETENTION) {
     return {
       kind: "enforce",
       policy: {

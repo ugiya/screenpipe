@@ -108,6 +108,26 @@ fn enforce_product_retention_policy(
     mut request: RetentionConfigureRequest,
     enforce_free_plan_retention: bool,
 ) -> RetentionConfigureRequest {
+    // FORK-LOCAL PATCH (personal build): this is the innermost safety boundary
+    // for the archive, and the only one that cannot be routed around by the
+    // frontend, the Tauri host, or a plan re-verification.
+    //
+    // Everything upstream of here can independently ask for destructive
+    // retention: `to_recording_config` sets the enforcement flag from plan
+    // state, `set_cloud_token` writes it into the live atomic on every account
+    // refresh, and the webview's account-load path persists
+    // enabled/7/"all" by itself. Guarding only `auto_start_retention` is
+    // therefore not enough. Refuse deletion here, so no caller can enable it.
+    //
+    // Manual cleanup is unaffected; only automatic deletion is refused.
+    // Re-apply after every upstream sync; see
+    // docs/local-build-account-gate-analysis.md.
+    const FORK_REFUSE_AUTOMATIC_DELETION: bool = true;
+    if FORK_REFUSE_AUTOMATIC_DELETION {
+        request.enabled = Some(false);
+        return request;
+    }
+
     if enforce_free_plan_retention {
         request.enabled = Some(true);
         request.retention_days = Some(7);

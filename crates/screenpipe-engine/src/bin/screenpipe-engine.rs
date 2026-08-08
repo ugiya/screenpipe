@@ -464,6 +464,15 @@ async fn main() -> anyhow::Result<()> {
         info!("telemetry force-disabled: detected CI / automation environment");
         config.analytics_enabled = false;
     }
+    // FORK-LOCAL PATCH (personal build): single authority for this binary.
+    // Set before setup_logging(), sentry::init(), ResourceTelemetryReporter and
+    // analytics::init(), so every one of those paths sees telemetry as off.
+    // Patching only sentry::init() would leave the Sentry tracing layer that
+    // setup_logging() installs from this same flag still active.
+    if config.analytics_enabled {
+        info!("telemetry force-disabled: fork-local personal build");
+        config.analytics_enabled = false;
+    }
 
     // mDNS LAN discovery is opt-in (off by default) so we don't trigger the
     // macOS "Local Network" permission prompt unless the user wants it.
@@ -494,11 +503,11 @@ async fn main() -> anyhow::Result<()> {
     // Periodic terminal nudge to install the desktop app (CLI-only).
     screenpipe_engine::cli_reminder::spawn();
 
-    // Initialize Sentry only if telemetry is enabled
-    // FORK-LOCAL PATCH (personal build): never. The desktop app runs the engine
-    // in-process so this binary's Sentry is unreachable from the app, but the
-    // CLI uses it. Upstream condition: `config.analytics_enabled`.
-    let _sentry_guard = if false {
+    // Initialize Sentry only if telemetry is enabled.
+    // (Fork-local: config.analytics_enabled is forced false above, so this and
+    // the logging Sentry layer are both inert. Left as upstream wrote it so the
+    // single authority stays in one place.)
+    let _sentry_guard = if config.analytics_enabled {
         let sentry_release_name_append = env::var("SENTRY_RELEASE_NAME_APPEND").unwrap_or_default();
         let release_name = format!(
             "{}{}",

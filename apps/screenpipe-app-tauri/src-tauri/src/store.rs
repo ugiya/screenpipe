@@ -1782,7 +1782,11 @@ impl SettingsStore {
         match self.local_plan_policy() {
             LocalPlanPolicy::VerifiedFree => {
                 config.max_non_template_pipes = Some(2);
-                config.enforce_free_plan_retention = true;
+                // FORK-LOCAL PATCH (personal build): never arm free-plan
+                // retention, whatever the plan says. Upstream sets this true.
+                // The pipe cap is deliberately left in place — it is the paid
+                // feature, and this fork does not take paid features.
+                config.enforce_free_plan_retention = false;
             }
             LocalPlanPolicy::Unknown => {
                 // Unknown must never inherit paid/unlimited behavior, but it is
