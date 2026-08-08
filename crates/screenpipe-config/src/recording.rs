@@ -818,7 +818,9 @@ impl Default for RecordingSettings {
             power_mode: None,
             keep_computer_awake: false,
             use_chinese_mirror: false,
-            analytics_enabled: true,
+            // FORK-LOCAL PATCH (personal build): telemetry off by default.
+            // Gates PostHog + Sentry in both the Tauri host and the engine.
+            analytics_enabled: false,
             analytics_id: String::new(),
             enable_workflow_events: false,
             device_tier: None,

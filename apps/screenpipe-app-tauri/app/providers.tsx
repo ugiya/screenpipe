@@ -92,6 +92,14 @@ export const Providers = forwardRef<
         api_host: "https://us.i.posthog.com",
         person_profiles: "identified_only",
         capture_pageview: false,
+        // FORK-LOCAL PATCH (personal build): upstream calls init() before any
+        // opt-out resolves, so the webview still reached us.i.posthog.com for
+        // flags/config on every launch even with analytics off. These two make
+        // the client inert at construction. Note this also disables the PostHog
+        // feature flags that desktop-remote-control.tsx uses to change settings
+        // remotely. Re-apply after every upstream sync.
+        opt_out_capturing_by_default: true,
+        advanced_disable_decide: true,
         ...(cachedAnalyticsId
           ? { bootstrap: { distinctID: cachedAnalyticsId, isIdentifiedID: true } }
           : {}),

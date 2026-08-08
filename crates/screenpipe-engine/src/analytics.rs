@@ -56,6 +56,15 @@ impl Analytics {
 /// in-process and calls [`init`] on every server start) — from inflating
 /// PostHog WAU and polluting Sentry with non-user events.
 pub fn telemetry_disabled_by_env() -> bool {
+    // FORK-LOCAL PATCH (personal build): always disabled. This is the engine's
+    // single kill switch — it silences the 60s vision/audio health pings, the
+    // resource monitor, api_usage_5min, meeting/sleep events, and the engine's
+    // Sentry client. A GUI app launched from Finder inherits no shell env, so
+    // setting SCREENPIPE_DISABLE_TELEMETRY externally would not work here.
+    // Re-apply after every upstream sync.
+    if true {
+        return true;
+    }
     ["SCREENPIPE_DISABLE_TELEMETRY", "GITHUB_ACTIONS", "CI"]
         .iter()
         .any(|var| {

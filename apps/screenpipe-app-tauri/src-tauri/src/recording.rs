@@ -146,7 +146,15 @@ fn recording_access_policy(
 pub(crate) fn recording_access_allowed(store: &SettingsStore) -> bool {
     recording_access_policy(
         cfg!(feature = "enterprise-build"),
-        cfg!(debug_assertions),
+        // FORK-LOCAL PATCH (personal, non-commercial build): bypass the account
+        // gate so a signed-out local build records. Upstream passes
+        // `cfg!(debug_assertions)` here. Recording is a free-tier capability, so
+        // this skips a sign-in, not a payment — paid features stay gated because
+        // plan policy remains Unknown. Keeping the plan Unknown is also what
+        // stops sync.rs from force-enabling the free plan's destructive 7-day
+        // retention over an existing archive. Re-apply after every upstream sync;
+        // see docs/local-build-account-gate-analysis.md.
+        true,
         store.local_plan_policy() != LocalPlanPolicy::Unknown,
         store.app_entitled_or_dev(),
         !cfg!(debug_assertions) && store.requires_enterprise_app_for_consumer(),

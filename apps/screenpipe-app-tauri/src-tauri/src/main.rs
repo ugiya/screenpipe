@@ -537,10 +537,10 @@ async fn main() {
     };
     // CI / automation (GitHub Actions, etc.) always wins over the settings
     // opt-in so the desktop-app e2e suite never reaches Sentry/PostHog.
-    let telemetry_disabled = store_bool("analyticsEnabled")
-        .map(|enabled| !enabled)
-        .unwrap_or(false)
-        || screenpipe_engine::analytics::telemetry_disabled_by_env();
+    // FORK-LOCAL PATCH (personal build): hard-off, so an existing store.bin that
+    // still says analyticsEnabled=true cannot re-enable Sentry/PostHog.
+    // Upstream: store_bool("analyticsEnabled").map(|e| !e).unwrap_or(false) || env.
+    let telemetry_disabled = true;
     // The webview gets this same decision through the
     // `is_telemetry_disabled_by_env` command (see commands.rs); it cannot read
     // the process env itself.
@@ -1958,7 +1958,9 @@ async fn main() {
                 });
             }
 
-            let is_analytics_enabled = store.recording.analytics_enabled;
+            // FORK-LOCAL PATCH (personal build): hard-off regardless of the
+            // stored setting. Upstream: store.recording.analytics_enabled.
+            let is_analytics_enabled = false;
 
             let is_autostart_enabled = store
                 .auto_start_enabled;

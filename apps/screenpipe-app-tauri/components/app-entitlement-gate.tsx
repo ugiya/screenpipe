@@ -234,11 +234,21 @@ export function AppEntitlementGate({
   // read failure, getCloudToken() may return nothing while verified plan truth
   // remains in store.bin. Keep retrying locally, but gate unknown evidence
   // immediately so restarting the webview cannot reset an access grace period.
+  // FORK-LOCAL PATCH (personal, non-commercial build): skip the consumer
+  // account gate so a signed-out local build records. Deliberately narrower
+  // than `devBypass` (isDevBillingBypassEnabled), which also makes
+  // hasAppEntitlement() report a paid entitlement — paid features must stay
+  // locked. Enterprise paths below are untouched. Pairs with the
+  // recording_access_allowed patch in src-tauri/src/recording.rs; re-apply
+  // after every upstream sync. See docs/local-build-account-gate-analysis.md.
+  const forkLocalSkipConsumerGate = true;
   const shouldGateForEnterpriseLogin =
     isManagedDeployment && authenticationState === "account";
   const shouldGateForConsumerLogin =
+    !forkLocalSkipConsumerGate &&
     !devBypass && !isManagedDeployment && !user?.token && !tokenPending;
   const shouldGateForUnknownConsumerPolicy =
+    !forkLocalSkipConsumerGate &&
     !devBypass &&
     !isManagedDeployment &&
     Boolean(user) &&
