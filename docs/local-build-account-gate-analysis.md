@@ -88,9 +88,37 @@ Risk is low and bounded:
 - `app-entitlement-required` is emitted at `main.rs:1664` but has no listener anywhere in the
   repo — dead weight either way.
 
-## Still open
+## Telemetry inventory
 
-An inventory of telemetry / analytics / tracking (PostHog, Sentry, usage pings, outbound
-hosts) was in progress when this session paused and was not completed. `analytics.rs:502`
-shows telemetry is already disabled in debug builds, which suggests `analytics.rs` is the place
-to start.
+Separate from the gate, and independently actionable.
+
+**Four PostHog senders** share one project key pointing at `us.i.posthog.com`: the webview
+(~305 capture sites across 71 files), the Tauri host (`src-tauri/src/analytics.rs`, including an
+`app_still_running` heartbeat every 6 h), the engine (`crates/screenpipe-engine/src/analytics.rs`,
+including `vision_pipeline_health` and `audio_pipeline_health` **every 60 s**), and the resource
+monitor. Identifying data sent includes email, name, user/clerk id, GitHub username,
+subscription plan, machine hostname, GPU names, audio device names, and a persistent
+`~/.screenpipe/machine_id` UUID. `src-tauri/src/analytics.rs:86` also does an IP-matched UTM
+attribution lookup against `screenpipe.com/api/attribution` on first boot.
+
+**Sentry** runs in both the app (`main.rs:550`) and the engine, gated on the same analytics
+setting. `send_default_pii` is false and paths are stripped.
+
+**Worth knowing:** `components/desktop-remote-control.tsx:69` lets PostHog **feature flags mutate
+your settings and restart the recorder** — inbound remote control, not just outbound reporting.
+It is disabled when analytics are opted out.
+
+**Good news for this build:** the auto-updater is already inert. `updates.rs:118-122`
+short-circuits when neither the `official-build` nor `enterprise-build` cargo feature is set, and
+the base `tauri.conf.json:48` ships `"endpoints": []` anyway.
+
+**Fastest complete off-switch:** set `SCREENPIPE_DISABLE_TELEMETRY=1` in the app's environment
+**and** turn off Settings → Privacy → Telemetry → Analytics. Together those cover every Rust
+sender and both Sentry clients. One residual remains: `app/providers.tsx:91` calls
+`posthog.init()` unconditionally, so the webview still makes a flags/config request on each
+launch before the opt-out applies. Killing that needs a source edit — either skip `init` or pass
+`opt_out_capturing_by_default: true` and `advanced_disable_decide: true`.
+
+Disabling all of the above is safe: the local `/health` sampler and `last-panic.log` are written
+locally and do not depend on telemetry. Do **not** block the auth, AI-inference, or model-download
+hosts — those are real functionality.
