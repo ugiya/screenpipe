@@ -247,11 +247,19 @@ export function AppEntitlementGate({
   const shouldGateForConsumerLogin =
     !forkLocalSkipConsumerGate &&
     !devBypass && !isManagedDeployment && !user?.token && !tokenPending;
-  // Deliberately NOT bypassed: this only fires when a user object exists
-  // (Boolean(user)), which never happens in the signed-out case we care about.
-  // Leaving it intact keeps upstream's stale-paid-evidence and clock-jump
-  // protections working, and keeps their tests green.
+  // Also bypassed. An earlier revision left this intact on the theory that it
+  // needs `Boolean(user)` and so could never fire while signed out. That was
+  // wrong in practice: this machine has a CACHED user object in store.bin from
+  // a past session, with no usable token, so `user` is truthy while the plan
+  // stays "unknown". The gate fired, the webview called stopScreenpipe(), and
+  // the engine was torn down ~40µs after reaching "ready" — even though the
+  // Rust side had correctly allowed the start.
+  //
+  // A cached identity with an unverifiable plan is exactly the steady state of
+  // this fork, so this gate can never be satisfied here. Enterprise paths below
+  // remain untouched.
   const shouldGateForUnknownConsumerPolicy =
+    !forkLocalSkipConsumerGate &&
     !devBypass &&
     !isManagedDeployment &&
     Boolean(user) &&
