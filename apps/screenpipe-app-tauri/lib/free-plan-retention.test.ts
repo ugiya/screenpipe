@@ -6,25 +6,30 @@ import { describe, expect, it } from "vitest";
 import { resolveFreePlanRetentionTransition } from "@/lib/free-plan-retention";
 
 describe("free-plan retention transitions", () => {
-  it("snapshots a paid preference before enforcing 7 days", () => {
-    expect(
-      resolveFreePlanRetentionTransition(
-        {
-          localRetentionEnabled: true,
-          localRetentionDays: 30,
-          localRetentionMode: "lean",
-        },
-        true,
-        false,
-      ),
-    ).toEqual({
-      kind: "enforce",
-      policy: { enabled: true, days: 7, mode: "all" },
-      previous: { enabled: true, days: 30, mode: "lean" },
-    });
+  // FORK-LOCAL: upstream asserted this returns an "enforce" transition
+  // (enabled/7/"all"). This fork never enforces free-plan retention, so the
+  // assertion is inverted to guard the fork invariant instead. If this test
+  // fails, the patch in lib/free-plan-retention.ts has been lost — most likely
+  // in an upstream rebase — and the archive is at risk again.
+  it("never enforces free-plan retention (fork invariant)", () => {
+    const transition = resolveFreePlanRetentionTransition(
+      {
+        localRetentionEnabled: true,
+        localRetentionDays: 30,
+        localRetentionMode: "lean",
+      },
+      true,
+      false,
+    );
+    expect(transition.kind).not.toBe("enforce");
+    expect(transition).toEqual({ kind: "none" });
   });
 
-  it("does not overwrite the snapshot during later free refreshes", () => {
+  // FORK-LOCAL: upstream asserted a repeat free refresh re-emits "enforce"
+  // without clobbering the saved snapshot. The fork emits nothing at all, so a
+  // background account refresh cannot rewrite retention settings. Same guard as
+  // above, for the already-applied path.
+  it("emits nothing on a repeat free refresh (fork invariant)", () => {
     const transition = resolveFreePlanRetentionTransition(
       {
         localRetentionEnabled: true,
@@ -37,10 +42,7 @@ describe("free-plan retention transitions", () => {
       false,
     );
 
-    expect(transition).toMatchObject({
-      kind: "enforce",
-      previous: { enabled: false, days: 90, mode: "media" },
-    });
+    expect(transition.kind).not.toBe("enforce");
   });
 
   it("restores the saved preference after a paid login even if logout happened first", () => {

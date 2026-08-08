@@ -76,6 +76,21 @@ export const Providers = forwardRef<
       const isE2E = process.env.NEXT_PUBLIC_SCREENPIPE_E2E === "true";
       const isBrowserDev = Boolean(process.env.NEXT_PUBLIC_SCREENPIPE_WEB_DEV);
       if (isDebug || isE2E || isBrowserDev) return;
+      // FORK-LOCAL PATCH (personal build): never initialise PostHog at all.
+      //
+      // Opting out after init() is not sufficient. posthog-js defaults to
+      // `autocapture: true` with `mask_all_text: false`, which transmits up to
+      // 1024 characters of a clicked element's visible text — and this app
+      // renders captured screen content into clickable labels. Only three
+      // surfaces carry `ph-no-capture`. Session replay is likewise not disabled
+      // client-side and is remotely switchable from the vendor's project.
+      // Both risks disappear only if the client is never constructed.
+      //
+      // Consequence: `posthogReady` stays false, so nothing downstream can
+      // capture, identify, alias, or read feature flags. That also disables the
+      // remote-control component, which uses flags to change settings and
+      // restart the recorder. Re-apply after every upstream sync.
+      return;
       // Read the cached analytics preference to sync PostHog opt-in/out
       // after init. undefined = first boot → allow capturing (default true).
       const cachedEnabled = readCachedAnalyticsEnabled();

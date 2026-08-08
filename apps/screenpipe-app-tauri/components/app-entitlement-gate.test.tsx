@@ -280,15 +280,17 @@ describe("AppEntitlementGate", () => {
     expect(screen.getByTestId("protected-app")).toBeInTheDocument();
   });
 
-  it("asks a signed-out user to sign in and never reveals the app", () => {
+  // FORK-LOCAL: upstream asserted the opposite — that a signed-out user is shown
+  // "sign in required" and never sees the app. This fork deliberately inverts
+  // that, so the assertion now guards the fork invariant. If this fails, the
+  // patch in app-entitlement-gate.tsx has been lost (most likely in an upstream
+  // rebase) and the webview will start stopping the recorder again.
+  it("reveals the app to a signed-out user (fork invariant)", () => {
     mocks.state.user = null;
     render(<AppEntitlementGate>{protectedApp}</AppEntitlementGate>);
 
-    expect(screen.getByText(/sign in required/i)).toBeInTheDocument();
-    expect(screen.queryByTestId("protected-app")).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: /sign in/i }));
-    expect(mocks.openLoginWindow).toHaveBeenCalled();
+    expect(screen.getByTestId("protected-app")).toBeInTheDocument();
+    expect(screen.queryByText(/sign in required/i)).not.toBeInTheDocument();
   });
 
   it.each(["main", "main-window", "search"])(
