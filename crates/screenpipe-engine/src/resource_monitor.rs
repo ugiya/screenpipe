@@ -370,6 +370,10 @@ impl ResourceTelemetryReporter {
         // CI / automation always wins over the settings opt-in (see
         // analytics::telemetry_disabled_by_env).
         let telemetry_enabled = telemetry_enabled && !crate::analytics::telemetry_disabled_by_env();
+        // FORK-LOCAL PATCH (personal build): the resource monitor POSTs straight
+        // to us.i.posthog.com (os, kernel, cpu brand, GPU names, memory slope),
+        // bypassing analytics::capture_event, so it needs its own off switch.
+        let telemetry_enabled = telemetry_enabled && false;
         let resource_log_file = if env::var("SAVE_RESOURCE_USAGE").is_ok() {
             let now = Local::now();
             let filename = format!("resource_usage_{}.json", now.format("%Y%m%d_%H%M%S"));

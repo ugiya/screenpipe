@@ -78,9 +78,26 @@ recorder a moment after the backend starts it:
 
 Risk is low and bounded:
 
-- **Tests:** the five gate tests (`recording.rs:1488` `mod recording_access_tests`) call the
+- **Tests:** the five Rust gate tests (`recording.rs` `mod recording_access_tests`) call the
   pure `recording_access_policy` with literal arguments, so they still pass. Do **not** patch
   `recording_access_policy` itself — that breaks them.
+  **Correction (verified by running them):** the *frontend* suite does break.
+  `components/app-entitlement-gate.test.tsx` has 39 tests; a broad patch fails 10 of them.
+  Narrowing the patch to `shouldGateForConsumerLogin` only — leaving
+  `shouldGateForUnknownConsumerPolicy` intact, since it requires `Boolean(user)` and so never
+  fires while signed out — brings that to **6 failures out of 39**. Those six
+  (`asks a signed-out user to sign in`, `still walls and stops on a real sign-out`,
+  `resumes recording when sign-in clears the consumer gate`, and three related) assert exactly
+  the behaviour the fork intends to invert. They are expected to fail; if they ever pass again,
+  the patch has stopped working. Everything else in the file must stay green — a seventh failure
+  means the patch got too broad.
+- **Back up `data/`, not just the databases.** Retention deletes DB rows *and* the physical media
+  under `~/.screenpipe/data/`. The database clone alone would not restore media. This does not
+  arise while plan policy stays `Unknown` (retention never runs), but it matters before testing
+  any fork build against an irreplaceable archive.
+- **The patch does not protect against the retention trap.** It removes the *gate*, not the
+  *retention rule*. If you ever sign in on a free plan, plan policy becomes `VerifiedFree` and
+  the forced 7-day deletion applies regardless of this patch.
 - **Rebase:** two small hunks to re-apply per upstream sync.
 - **Side effects:** retention never auto-starts, so disk grows unbounded and needs manual
   management (~9 GB/month at current usage). The health watchdog will now respawn a crashed

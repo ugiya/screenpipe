@@ -247,8 +247,11 @@ export function AppEntitlementGate({
   const shouldGateForConsumerLogin =
     !forkLocalSkipConsumerGate &&
     !devBypass && !isManagedDeployment && !user?.token && !tokenPending;
+  // Deliberately NOT bypassed: this only fires when a user object exists
+  // (Boolean(user)), which never happens in the signed-out case we care about.
+  // Leaving it intact keeps upstream's stale-paid-evidence and clock-jump
+  // protections working, and keeps their tests green.
   const shouldGateForUnknownConsumerPolicy =
-    !forkLocalSkipConsumerGate &&
     !devBypass &&
     !isManagedDeployment &&
     Boolean(user) &&

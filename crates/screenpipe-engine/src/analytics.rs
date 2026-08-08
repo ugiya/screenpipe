@@ -62,9 +62,6 @@ pub fn telemetry_disabled_by_env() -> bool {
     // Sentry client. A GUI app launched from Finder inherits no shell env, so
     // setting SCREENPIPE_DISABLE_TELEMETRY externally would not work here.
     // Re-apply after every upstream sync.
-    if true {
-        return true;
-    }
     ["SCREENPIPE_DISABLE_TELEMETRY", "GITHUB_ACTIONS", "CI"]
         .iter()
         .any(|var| {
@@ -85,6 +82,15 @@ pub(crate) fn env_value_truthy(value: &str) -> bool {
 pub fn init(telemetry_enabled: bool) {
     // CI / automation always wins over the settings opt-in.
     let telemetry_enabled = telemetry_enabled && !telemetry_disabled_by_env();
+    // FORK-LOCAL PATCH (personal build): force off at the single choke point.
+    // `capture_event` early-returns on `!is_enabled()`, so clearing the atomic
+    // here silences the 60s vision/audio health pings, api_usage_5min,
+    // meeting/sleep events and the rest. Patched here rather than in
+    // `telemetry_disabled_by_env` so that function keeps its upstream env
+    // semantics and its unit tests still pass. A GUI app launched from Finder
+    // inherits no shell env, so the env var alone would not work.
+    // Re-apply after every upstream sync.
+    let telemetry_enabled = telemetry_enabled && false;
     TELEMETRY_ENABLED.store(telemetry_enabled, Ordering::SeqCst);
     // Force lazy initialization
     let _ = &*ANALYTICS;
