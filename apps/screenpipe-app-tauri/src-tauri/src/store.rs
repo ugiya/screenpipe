@@ -786,7 +786,8 @@ fn durable_flush_if_still_plaintext(store_path: &Path, plaintext: &[u8]) {
 
 /// Re-encrypt store.bin on disk. Called after the Tauri store plugin writes plain JSON.
 /// Also syncs the .encrypt-store flag file from the encryptStore setting.
-pub fn reencrypt_store_file(app: &AppHandle) {
+// fork: runtime-generic so the real initializer can be exercised with Tauri's isolated test runtime.
+pub fn reencrypt_store_file<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     if let Ok(base_dir) = get_base_dir(app, None) {
         reencrypt_store_at(&base_dir.join("store.bin"));
     }
@@ -814,9 +815,10 @@ fn save_store_to_disk<R: tauri::Runtime>(
     retry_windows_store_io(|| store.save()).map_err(|e| e.to_string())
 }
 
-pub(crate) fn save_store_with_permission_repair(
-    app: &AppHandle,
-    store: &tauri_plugin_store::Store<tauri::Wry>,
+// fork: preserve the production save path while allowing the real initializer to use MockRuntime.
+pub(crate) fn save_store_with_permission_repair<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    store: &tauri_plugin_store::Store<R>,
 ) -> Result<(), String> {
     match save_store_to_disk(store) {
         Ok(()) => Ok(()),
@@ -1124,6 +1126,32 @@ pub fn get_store(
     Ok(store)
 }
 
+// fork: Wry keeps its process cache; tests open the same store boundary under MockRuntime.
+#[doc(hidden)]
+pub trait InitStoreRuntime: tauri::Runtime {
+    fn open_settings_store(
+        app: &tauri::AppHandle<Self>,
+    ) -> anyhow::Result<Arc<tauri_plugin_store::Store<Self>>>;
+}
+
+impl InitStoreRuntime for tauri::Wry {
+    fn open_settings_store(
+        app: &tauri::AppHandle<Self>,
+    ) -> anyhow::Result<Arc<tauri_plugin_store::Store<Self>>> {
+        get_store(app, None)
+    }
+}
+
+#[cfg(test)]
+impl InitStoreRuntime for tauri::test::MockRuntime {
+    fn open_settings_store(
+        app: &tauri::AppHandle<Self>,
+    ) -> anyhow::Result<Arc<tauri_plugin_store::Store<Self>>> {
+        let store_path = get_base_dir(app, None)?.join("store.bin");
+        build_store_at(app, store_path)
+    }
+}
+
 /// Invalidate the cached store so the next `get_store` call rebuilds it.
 /// Called when a "resource id … is invalid" error is detected.
 pub fn invalidate_store_cache() {
@@ -1198,7 +1226,9 @@ pub const TRIAL_ACTIVATION_UNLOCKED_STEP: &str = "trial-activation-v1-unlocked";
 // Set false in a later release to migrate every persisted treatment install
 // out of the gate, including offline users who cannot receive the PostHog
 // force-unlock flag.
-pub const TRIAL_ACTIVATION_ROLLOUT_ENABLED: bool = true;
+// fork: consumer builds never enroll in or restore the trial-activation gate;
+// enterprise builds retain the upstream rollout and authorization behavior.
+pub const TRIAL_ACTIVATION_ROLLOUT_ENABLED: bool = cfg!(feature = "enterprise-build");
 
 pub fn trial_activation_dev_force_enabled() -> bool {
     cfg!(debug_assertions) && option_env!("SCREENPIPE_TRIAL_ACTIVATION_DEV") == Some("1")
@@ -1216,7 +1246,13 @@ impl OnboardingStore {
     /// first valid summary and the card-backed trial. Settings and connection
     /// setup are explicitly exempted by the window/router callers.
     pub fn blocks_trial_activation_app(&self) -> bool {
-        self.trial_activation_fresh_install
+        self.blocks_trial_activation_app_for_build(cfg!(feature = "enterprise-build"))
+    }
+
+    fn blocks_trial_activation_app_for_build(&self, is_enterprise_build: bool) -> bool {
+        // fork: persisted consumer treatment state cannot lock app surfaces.
+        is_enterprise_build
+            && self.trial_activation_fresh_install
             && self.is_completed
             && matches!(
                 self.current_step.as_deref(),
@@ -1228,18 +1264,25 @@ impl OnboardingStore {
     /// only after that result has actually rendered and the durable paywall
     /// sentinel is written.
     pub fn blocks_trial_activation_recording(&self) -> bool {
-        self.trial_activation_fresh_install
+        self.blocks_trial_activation_recording_for_build(cfg!(feature = "enterprise-build"))
+    }
+
+    fn blocks_trial_activation_recording_for_build(&self, is_enterprise_build: bool) -> bool {
+        // fork: persisted consumer treatment state cannot pause capture.
+        is_enterprise_build
+            && self.trial_activation_fresh_install
             && self.is_completed
             && self.current_step.as_deref() == Some(TRIAL_ACTIVATION_PAYWALL_STEP)
     }
 
     fn apply_trial_activation_rollout(&mut self, enabled: bool) -> bool {
-        if enabled
-            || (!self.blocks_trial_activation_app()
-                && !self.blocks_trial_activation_recording())
-        {
+        let has_persisted_gate = self.blocks_trial_activation_app_for_build(true)
+            || self.blocks_trial_activation_recording_for_build(true);
+        if enabled || !has_persisted_gate {
             return false;
         }
+        // fork: durably discard consumer summary/paywall treatment state so
+        // frontend restore paths also observe an unlocked onboarding record.
         self.current_step = Some(TRIAL_ACTIVATION_UNLOCKED_STEP.to_string());
         true
     }
@@ -2212,8 +2255,10 @@ impl SettingsStore {
         obj.insert("provider".to_string(), Value::String("acp".to_string()));
     }
 
-    pub fn get(app: &AppHandle) -> Result<Option<Self>, String> {
-        let store = get_store(app, None).map_err(|e| format!("Failed to get store: {}", e))?;
+    // fork: runtime-generic access lets init_store use the real plugin store in isolation.
+    pub fn get<R: InitStoreRuntime>(app: &tauri::AppHandle<R>) -> Result<Option<Self>, String> {
+        let store =
+            R::open_settings_store(app).map_err(|e| format!("Failed to get store: {}", e))?;
 
         match store.is_empty() {
             true => Ok(None),
@@ -2578,8 +2623,9 @@ impl SettingsStore {
         resolution
     }
 
-    pub fn save(&self, app: &AppHandle) -> Result<(), String> {
-        let Ok(store) = get_store(app, None) else {
+    // fork: runtime-generic persistence retains the same save and encryption behavior.
+    pub fn save<R: InitStoreRuntime>(&self, app: &tauri::AppHandle<R>) -> Result<(), String> {
+        let Ok(store) = R::open_settings_store(app) else {
             return Err("Failed to get store".to_string());
         };
 
@@ -2678,8 +2724,7 @@ fn migrate_timeline_visibility_to_sidebar(
     true
 }
 
-const WINDOWS_TIMELINE_WINDOW_MODE_MIGRATION: &str =
-    "windowsTimelineWindowModeMigrationV1";
+const WINDOWS_TIMELINE_WINDOW_MODE_MIGRATION: &str = "windowsTimelineWindowModeMigrationV1";
 
 /// Move existing Windows installs off the legacy borderless fullscreen overlay.
 ///
@@ -2725,13 +2770,14 @@ fn backfill_default_ai_preset(settings: &mut SettingsStore) -> bool {
     true
 }
 
-pub fn init_store(app: &AppHandle) -> Result<SettingsStore, String> {
+// fork: MockRuntime support makes fresh-install policy testable without touching user data.
+pub fn init_store<R: InitStoreRuntime>(app: &tauri::AppHandle<R>) -> Result<SettingsStore, String> {
     println!("Initializing settings store");
 
     // Access errors are not deserialization errors. In particular, the locked
     // encrypted-store path must reach the setup caller so startup aborts before
     // any webview can invoke the plugin's unguarded load/save commands.
-    let store_handle = require_store_access(get_store(app, None))?;
+    let store_handle = require_store_access(R::open_settings_store(app))?;
     let raw_obj = store_handle
         .get("settings")
         .and_then(|raw| raw.as_object().cloned());
@@ -2759,8 +2805,7 @@ pub fn init_store(app: &AppHandle) -> Result<SettingsStore, String> {
             }
             (
                 store,
-                should_persist_restart_notification_migration
-                    || should_persist_ai_preset_backfill,
+                should_persist_restart_notification_migration || should_persist_ai_preset_backfill,
                 true,
             )
         }
@@ -2880,37 +2925,9 @@ pub fn init_store(app: &AppHandle) -> Result<SettingsStore, String> {
         }
     }
 
-    // New installs opt into local data retention (14-day media cleanup; transcripts,
-    // OCR and the searchable timeline are kept). Written as an explicit store field so
-    // the Storage settings toggle shows ON and auto_start_retention() picks it up.
-    // Existing stores are never touched here: flipping the fallback for users who
-    // installed before this default would silently delete their old recordings —
-    // auto_start_retention() in sync.rs deliberately reads `localRetentionEnabled ?? false`.
-    //
-    // A fresh settings store is NOT proof of a fresh install: the store-recovery
-    // paths (unreadable encrypted store.bin with no snapshot, corrupted JSON with
-    // no healthy .last-good) fall back to an empty store for users with years of
-    // recordings, and machine migrations often copy ~/.screenpipe without the
-    // app-config dir. So additionally require that the data dir holds no existing
-    // recordings — retention may only default on when there is nothing to delete.
-    if is_new_store && !store.extra.contains_key("localRetentionEnabled") {
-        let data_dir = crate::config::resolve_data_dir(&store.data_dir)
-            .map_err(|error| format!("failed to prepare Screenpipe data directory: {error}"))?;
-        let has_existing_recordings = data_dir.join("db.sqlite").exists();
-        if has_existing_recordings {
-            tracing::info!(
-                "fresh settings store but existing recordings found at {:?} — \
-                 leaving local retention off (likely store recovery or migration)",
-                data_dir
-            );
-        } else {
-            store.extra.insert(
-                "localRetentionEnabled".to_string(),
-                serde_json::Value::Bool(true),
-            );
-            should_save = true;
-        }
-    }
+    // fork: do not seed localRetentionEnabled on a new install. The missing-key
+    // fallback is false, so retention starts only after the user explicitly
+    // enables it in Settings; existing explicit choices remain untouched.
 
     if restore_headed_mode_for_consumer(&mut store, cfg!(feature = "enterprise-build")) {
         tracing::info!(
@@ -2929,9 +2946,7 @@ pub fn init_store(app: &AppHandle) -> Result<SettingsStore, String> {
         && can_run_settings_migrations
         && migrate_windows_timeline_to_window_mode(&mut store)
     {
-        tracing::info!(
-            "settings migration: selected window mode for the Windows timeline overlay"
-        );
+        tracing::info!("settings migration: selected window mode for the Windows timeline overlay");
         should_save = true;
     }
 
@@ -3252,7 +3267,7 @@ mod tests {
     const FALLBACK_ENGINE: &str = "whisper-large-v3-turbo-quantized";
 
     #[test]
-    fn trial_activation_blocks_product_but_not_capture_until_paywall() {
+    fn trial_activation_gate_is_enterprise_only() {
         let mut onboarding = OnboardingStore::new_install();
         onboarding.complete();
 
@@ -3266,12 +3281,16 @@ mod tests {
 
         onboarding.current_step = Some(TRIAL_ACTIVATION_SUMMARY_STEP.to_string());
 
-        assert!(onboarding.blocks_trial_activation_app());
-        assert!(!onboarding.blocks_trial_activation_recording());
+        assert!(onboarding.blocks_trial_activation_app_for_build(true));
+        assert!(!onboarding.blocks_trial_activation_recording_for_build(true));
+        assert!(!onboarding.blocks_trial_activation_app_for_build(false));
+        assert!(!onboarding.blocks_trial_activation_recording_for_build(false));
 
         onboarding.current_step = Some(TRIAL_ACTIVATION_PAYWALL_STEP.to_string());
-        assert!(onboarding.blocks_trial_activation_app());
-        assert!(onboarding.blocks_trial_activation_recording());
+        assert!(onboarding.blocks_trial_activation_app_for_build(true));
+        assert!(onboarding.blocks_trial_activation_recording_for_build(true));
+        assert!(!onboarding.blocks_trial_activation_app_for_build(false));
+        assert!(!onboarding.blocks_trial_activation_recording_for_build(false));
 
         onboarding.current_step = Some(TRIAL_ACTIVATION_UNLOCKED_STEP.to_string());
         assert!(!onboarding.blocks_trial_activation_app());
@@ -3369,7 +3388,10 @@ mod tests {
 
     #[test]
     fn shortcut_overlay_anchor_defaults_to_top_center() {
-        assert_eq!(SettingsStore::default().shortcut_overlay_anchor, "top-center");
+        assert_eq!(
+            SettingsStore::default().shortcut_overlay_anchor,
+            "top-center"
+        );
 
         // Settings written before the pill could be pinned have no anchor key.
         let missing: SettingsStore = serde_json::from_value(json!({
@@ -3867,8 +3889,8 @@ mod tests {
         // non-Unknown plan policy is.
         let on_disk: Value = serde_json::from_slice(&std::fs::read(&store_path).unwrap())
             .expect("restored store.bin must parse");
-        let recovered: SettingsStore =
-            serde_json::from_value(on_disk["settings"].clone()).expect("restored settings deserialize");
+        let recovered: SettingsStore = serde_json::from_value(on_disk["settings"].clone())
+            .expect("restored settings deserialize");
         assert_ne!(
             recovered.local_plan_policy(),
             LocalPlanPolicy::Unknown,
@@ -3882,7 +3904,9 @@ mod tests {
             .filter_map(Result::ok)
             .any(|entry| {
                 entry.file_name().to_string_lossy().contains("pre-restore")
-                    && std::fs::read(entry.path()).map(|b| b == torn).unwrap_or(false)
+                    && std::fs::read(entry.path())
+                        .map(|b| b == torn)
+                        .unwrap_or(false)
             });
         assert!(
             preserved,
@@ -4259,9 +4283,7 @@ mod tests {
 
         // Distinct, long, byte-uniform payloads: any interleaving of two
         // writers is trivially detectable, and the size widens the race window.
-        let payloads: Vec<Vec<u8>> = (0..8u8)
-            .map(|i| vec![b'a' + i; 256 * 1024])
-            .collect();
+        let payloads: Vec<Vec<u8>> = (0..8u8).map(|i| vec![b'a' + i; 256 * 1024]).collect();
 
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(payloads.len()));
         let handles: Vec<_> = payloads
@@ -4697,7 +4719,10 @@ mod tests {
             &std::fs::read(&store_path).expect("failed to read pre-restart store"),
         )
         .expect("pre-restart store is invalid JSON");
-        assert_eq!(before.pointer("/settings/autoUpdate"), Some(&Value::Bool(false)));
+        assert_eq!(
+            before.pointer("/settings/autoUpdate"),
+            Some(&Value::Bool(false))
+        );
 
         save_store_to_disk(store.as_ref()).expect("restart persistence failed");
 
@@ -4705,7 +4730,10 @@ mod tests {
             &std::fs::read(&store_path).expect("failed to read persisted store"),
         )
         .expect("persisted store is invalid JSON");
-        assert_eq!(after.pointer("/settings/autoUpdate"), Some(&Value::Bool(true)));
+        assert_eq!(
+            after.pointer("/settings/autoUpdate"),
+            Some(&Value::Bool(true))
+        );
     }
 
     #[test]
@@ -5462,7 +5490,11 @@ mod tests {
                 .and_then(Value::as_bool),
             Some(true)
         );
-        assert!(!round_tripped.to_recording_settings().enable_semantic_context);
+        assert!(
+            !round_tripped
+                .to_recording_settings()
+                .enable_semantic_context
+        );
     }
 
     #[test]
@@ -5655,7 +5687,10 @@ mod tests {
         reencrypt_store_at(&store_path);
 
         let last_good = store_path.with_extension(LAST_GOOD_SUFFIX);
-        assert!(last_good.exists(), "last-good is the plaintext recovery copy");
+        assert!(
+            last_good.exists(),
+            "last-good is the plaintext recovery copy"
+        );
         assert!(store_json_has_presets(&std::fs::read(&last_good).unwrap()));
 
         let now = std::fs::read(&store_path).unwrap();
@@ -5681,6 +5716,54 @@ mod tests {
         }
         let idx = ((sorted.len() as f64 - 1.0) * p).round() as usize;
         sorted[idx.min(sorted.len() - 1)]
+    }
+
+    #[test]
+    fn init_store_does_not_seed_local_retention() {
+        // fork: isolate the process-global app-data directory so this exercises
+        // the real fresh-store initializer without reading a user's settings.
+        const CHILD_DATA_DIR: &str = "SCREENPIPE_TEST_INIT_STORE_DATA_DIR";
+        let Some(data_dir) = std::env::var_os(CHILD_DATA_DIR).map(std::path::PathBuf::from) else {
+            let root = tempfile::tempdir().unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "store::tests::init_store_does_not_seed_local_retention",
+                    "--nocapture",
+                ])
+                .env("SCREENPIPE_DATA_DIR", root.path())
+                .env_remove("SCREENPIPE_ENCRYPT_STORE")
+                .env(CHILD_DATA_DIR, root.path())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "isolated init_store regression failed:\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+            return;
+        };
+
+        assert_eq!(crate::config::app_data_dir(), data_dir);
+        let app = tauri::test::mock_builder()
+            .plugin(tauri_plugin_store::Builder::default().build())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+
+        let settings = init_store(app.handle()).expect("fresh settings store should initialize");
+        assert!(!settings.extra.contains_key("localRetentionEnabled"));
+
+        let persisted: Value = serde_json::from_slice(
+            &std::fs::read(data_dir.join("store.bin"))
+                .expect("fresh settings store should be persisted"),
+        )
+        .expect("fresh settings store should remain JSON when encryption is disabled");
+        assert_eq!(
+            persisted.pointer("/settings/localRetentionEnabled"),
+            None,
+            "init_store must not persist an automatic retention opt-in",
+        );
     }
 
     /// Deep benchmark of the path sampled on 2026-08-26: 200 IPC-style
@@ -5709,8 +5792,7 @@ mod tests {
         }
         let baseline_syncs = baseline_iters as u64;
         baseline_ns.sort_unstable();
-        let baseline_total_ms: f64 =
-            baseline_ns.iter().sum::<u128>() as f64 / 1_000_000.0;
+        let baseline_total_ms: f64 = baseline_ns.iter().sum::<u128>() as f64 / 1_000_000.0;
         let baseline_p50 = percentile(&baseline_ns, 0.50) as f64 / 1_000.0;
         let baseline_p99 = percentile(&baseline_ns, 0.99) as f64 / 1_000.0;
 
@@ -5760,7 +5842,11 @@ mod tests {
         let enc_total_ms: f64 = enc_ns.iter().sum::<u128>() as f64 / 1_000_000.0;
         let enc_p50 = percentile(&enc_ns, 0.50) as f64 / 1_000.0;
         let enc_p99 = percentile(&enc_ns, 0.99) as f64 / 1_000.0;
-        assert_eq!(mtime(&store_path), enc_m, "ciphertext loop must not rewrite");
+        assert_eq!(
+            mtime(&store_path),
+            enc_m,
+            "ciphertext loop must not rewrite"
+        );
 
         eprintln!(
             "\n=== store reencrypt CPU benchmark ===\n\

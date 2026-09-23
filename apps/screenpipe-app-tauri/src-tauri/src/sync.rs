@@ -8,7 +8,7 @@ use crate::recording::{local_api_context_from_app, LocalApiContext};
 use crate::store::{CloudArchiveSettingsStore, CloudSyncSettingsStore, SettingsStore};
 use screenpipe_core::sync::{get_or_create_machine_id, SyncManager};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::{future::Future, sync::Arc};
 use tauri::{AppHandle, State};
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
@@ -464,51 +464,72 @@ fn retention_config_from_settings(settings: &SettingsStore) -> Option<(u32, &'st
     Some((days, mode))
 }
 
-/// Auto-start local data retention on app launch if the user enabled it.
+fn fork_retention_auto_start_allowed(_settings: &SettingsStore) -> bool {
+    // fork: legacy stores may contain an automatically written true/7/all;
+    // launch never treats any persisted value as fresh consent to delete data.
+    false
+}
+
+async fn dispatch_retention_auto_start<F, Fut>(settings: &SettingsStore, configure: F)
+where
+    F: FnOnce(u32, &'static str) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    if !fork_retention_auto_start_allowed(&settings) {
+        info!("fork-local: automatic retention startup disabled");
+        return;
+    }
+
+    // Retention is device-local configuration: either the user's preference or
+    // explicit enterprise managed policy. Account and subscription changes must
+    // never modify it. Legacy stores that pre-date this field are off: the
+    // retention-settings UI reads `localRetentionEnabled ?? false`, so
+    // defaulting to `true` here would delete data behind the user's back.
+    let Some((days, mode)) = retention_config_from_settings(&settings) else {
+        return;
+    };
+
+    configure(days, mode).await;
+}
+
+/// Keep launch-time retention disabled; manual in-session configuration remains available.
 pub async fn auto_start_retention(app: &AppHandle) {
     let settings = match SettingsStore::get(app) {
         Ok(Some(s)) => s,
         _ => return,
     };
 
-    // Retention is device-local configuration: either the user's preference or
-    // explicit enterprise managed policy. Account and subscription changes must
-    // never modify it. Legacy stores that pre-date this field are off: the
-    // retention-settings UI reads `localRetentionEnabled ?? false`, so
-    // defaulting to `true` here would delete data behind the user's back. New
-    // installs receive their initial preference from init_store().
-    let Some((days, mode)) = retention_config_from_settings(&settings) else {
-        return;
-    };
+    dispatch_retention_auto_start(&settings, |days, mode| async move {
+        let client = reqwest::Client::new();
+        let api = local_api_context_from_app(app);
+        let configure_req = serde_json::json!({
+            "enabled": true,
+            "retention_days": days,
+            "mode": mode,
+        });
 
-    let client = reqwest::Client::new();
-    let api = local_api_context_from_app(app);
-    let configure_req = serde_json::json!({
-        "enabled": true,
-        "retention_days": days,
-        "mode": mode,
-    });
-
-    match apply_local_api_auth(&api, client.post(api.url("/retention/configure")))
-        .json(&configure_req)
-        .send()
-        .await
-    {
-        Ok(response) if response.status().is_success() => {
-            info!(
-                "local retention auto-started (retention={}d, mode={})",
-                days, mode
-            );
+        match apply_local_api_auth(&api, client.post(api.url("/retention/configure")))
+            .json(&configure_req)
+            .send()
+            .await
+        {
+            Ok(response) if response.status().is_success() => {
+                info!(
+                    "local retention auto-started (retention={}d, mode={})",
+                    days, mode
+                );
+            }
+            Ok(response) => {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                warn!("local retention auto-start failed ({}): {}", status, body);
+            }
+            Err(e) => {
+                warn!("local retention auto-start: server not reachable: {}", e);
+            }
         }
-        Ok(response) => {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            warn!("local retention auto-start failed ({}): {}", status, body);
-        }
-        Err(e) => {
-            warn!("local retention auto-start: server not reachable: {}", e);
-        }
-    }
+    })
+    .await;
 }
 
 /// Delete all cloud data.
@@ -527,7 +548,9 @@ pub async fn delete_cloud_data(state: State<'_, SyncState>) -> Result<(), String
 
 #[cfg(test)]
 mod tests {
-    use super::{retention_config_from_settings, retention_mode_from_settings};
+    use super::{
+        dispatch_retention_auto_start, retention_config_from_settings, retention_mode_from_settings,
+    };
     use crate::store::SettingsStore;
     use serde_json::json;
 
@@ -569,6 +592,37 @@ mod tests {
             .insert("localRetentionEnabled".to_string(), json!(false));
 
         assert_eq!(retention_config_from_settings(&settings), None);
+    }
+
+    #[test]
+    fn fork_retention_is_off_without_an_explicit_user_preference() {
+        // fork: a missing key must never become an implicit deletion opt-in.
+        let settings = SettingsStore::default();
+        assert!(!settings.extra.contains_key("localRetentionEnabled"));
+        assert_eq!(retention_config_from_settings(&settings), None);
+    }
+
+    #[tokio::test]
+    async fn fork_launch_ignores_legacy_true_seven_days_all_retention() {
+        // fork: the startup seam receives the real stored shape that earlier
+        // builds wrote automatically and must refuse to start cleanup.
+        let mut settings = SettingsStore::default();
+        settings
+            .extra
+            .insert("localRetentionEnabled".to_string(), json!(true));
+        settings
+            .extra
+            .insert("localRetentionDays".to_string(), json!(7));
+        settings
+            .extra
+            .insert("localRetentionMode".to_string(), json!("all"));
+        assert_eq!(retention_config_from_settings(&settings), Some((7, "all")));
+        let configured = std::sync::atomic::AtomicBool::new(false);
+        dispatch_retention_auto_start(&settings, |_, _| async {
+            configured.store(true, std::sync::atomic::Ordering::SeqCst);
+        })
+        .await;
+        assert!(!configured.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     #[test]

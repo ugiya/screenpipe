@@ -216,7 +216,6 @@ pub async fn pipe_store_publish(
 ///
 /// Install a pipe from the registry by slug.
 /// Fetches the pipe's source_md from the registry, then uses PipeManager to install it locally.
-/// Increments the install count on the registry afterwards.
 pub async fn pipe_store_install(
     State(pm): State<SharedPipeManager>,
     Json(body): Json<StoreInstallRequest>,
@@ -301,12 +300,7 @@ async fn pipe_store_install_with_base(
         }
     };
 
-    // Accounting must never make a successful local installation look failed.
-    // The shared client's 15s bound also applies to this detached request.
-    let increment_url = format!("{}/api/pipes/store/{}/install", base, body.slug);
-    tokio::spawn(async move {
-        let _ = REGISTRY_CLIENT.post(&increment_url).send().await;
-    });
+    // fork: installation is functional; install-count reporting is disabled.
 
     Json(json!({ "success": true, "name": name, "slug": body.slug, "connections": connections }))
 }
@@ -684,7 +678,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn slow_install_accounting_does_not_delay_local_success_or_hold_manager() {
+    async fn install_downloads_registry_source_without_reporting_install_count() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/pipes/store/test-pipe"))
@@ -695,8 +689,8 @@ mod tests {
             .mount(&server).await;
         Mock::given(method("POST"))
             .and(path("/api/pipes/store/test-pipe/install"))
-            .respond_with(ResponseTemplate::new(503).set_delay(std::time::Duration::from_secs(5)))
-            .expect(1)
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
             .mount(&server)
             .await;
         let dir = tempfile::tempdir().unwrap();
@@ -708,46 +702,29 @@ mod tests {
                 3030,
             ),
         ));
-        let Json(body) = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            pipe_store_install_with_base(
-                pm.clone(),
-                StoreInstallRequest {
-                    slug: "test-pipe".into(),
-                },
-                server.uri(),
-            ),
+        let Json(body) = pipe_store_install_with_base(
+            pm.clone(),
+            StoreInstallRequest {
+                slug: "test-pipe".into(),
+            },
+            server.uri(),
         )
-        .await
-        .expect("local installation must not wait for registry accounting");
+        .await;
         assert_eq!(body["success"], true);
         assert_eq!(body["connections"], json!(["gmail"]));
         assert!(dir.path().join("pipes/test-pipe/pipe.md").exists());
         let manager = pm
             .try_lock()
-            .expect("accounting must not hold the pipe manager");
+            .expect("installation must release the pipe manager");
         assert!(manager
             .list_pipes()
             .await
             .iter()
             .any(|p| p.config.name == "test-pipe"));
-        // Let the detached request reach the registry; no need to wait for its response.
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            loop {
-                if server
-                    .received_requests()
-                    .await
-                    .unwrap()
-                    .iter()
-                    .any(|r| r.method == "POST")
-                {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
+        drop(manager);
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method.as_str(), "GET");
     }
 
     #[tokio::test]

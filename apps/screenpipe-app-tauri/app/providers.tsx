@@ -116,6 +116,9 @@ export const Providers = forwardRef<
       const isE2E = process.env.NEXT_PUBLIC_SCREENPIPE_E2E === "true";
       const isBrowserDev = Boolean(process.env.NEXT_PUBLIC_SCREENPIPE_WEB_DEV);
       if (isDebug || isE2E || isBrowserDev) return;
+      // fork: never construct PostHog. Opting out after init still permits the
+      // bootstrap flags/config request and leaves remotely enabled autocapture.
+      return;
       // Read the cached analytics preference to sync PostHog opt-in/out
       // after init. undefined = first boot → allow capturing (default true).
       const cachedEnabled = readCachedAnalyticsEnabled();
@@ -190,7 +193,9 @@ export const Providers = forwardRef<
                           >
                             <PermissionMonitorProvider>
                               <UpdateListenerMount />
-                              <DesktopRemoteControl enabled={posthogReady} />
+                              {/* fork: PostHog flags must never mutate settings
+                                  or restart recording in this personal build. */}
+                              <DesktopRemoteControl enabled={false} />
                               {!isOverlay && <LiveViewOnboardingFollowUp />}
                               {!isOverlay && <BackgroundPipeAllowanceNotifier />}
                               {!isOverlay && <WorkflowsRolloutSync />}

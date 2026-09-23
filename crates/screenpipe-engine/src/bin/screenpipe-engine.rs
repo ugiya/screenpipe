@@ -547,6 +547,12 @@ async fn main() -> anyhow::Result<()> {
         info!("telemetry force-disabled: detected CI / automation environment");
         config.analytics_enabled = false;
     }
+    // fork: establish one hard-off authority before logging, Sentry, resource
+    // reporting, and engine analytics consume this standalone-binary config.
+    if config.analytics_enabled {
+        info!("telemetry force-disabled: fork-local personal build");
+        config.analytics_enabled = false;
+    }
 
     // mDNS LAN discovery is opt-in (off by default) so we don't trigger the
     // macOS "Local Network" permission prompt unless the user wants it.

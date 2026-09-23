@@ -169,13 +169,7 @@ async fn install_one(
         .install_pipe_from_store(&source_md, slug, version)
         .await?;
 
-    // Best-effort install-count increment (fire-and-forget).
-    let increment_url = format!(
-        "{}/api/pipes/store/{}/install",
-        api_base.trim_end_matches('/'),
-        slug
-    );
-    let _ = client.post(&increment_url).send().await;
+    // fork: installation is functional; install-count reporting is disabled.
 
     Ok(name)
 }

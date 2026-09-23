@@ -985,7 +985,8 @@ impl Default for RecordingSettings {
             power_mode: None,
             keep_computer_awake: false,
             use_chinese_mirror: false,
-            analytics_enabled: true,
+            // fork: telemetry is opt-out at the serialized-config boundary too.
+            analytics_enabled: false,
             analytics_id: String::new(),
             enable_workflow_events: false,
             device_tier: None,

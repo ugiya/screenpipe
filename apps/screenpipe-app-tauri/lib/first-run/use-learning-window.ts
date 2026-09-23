@@ -29,8 +29,6 @@ import {
 } from "@/lib/first-run/learning-window";
 import { fetchRecentActivity } from "@/lib/first-run/recent-activity";
 import {
-  TRIAL_ACTIVATION_PAYWALL_STEP,
-  trialActivationState,
   type TrialActivationState,
 } from "@/lib/first-run/trial-activation";
 
@@ -76,7 +74,9 @@ export function useLearningWindow(
       const result = await commands.getOnboardingStatus();
       if (cancelled || result.status !== "ok" || !result.data.isCompleted) return;
       const native = result.data;
-      setActivationState(trialActivationState(native.currentStep));
+      // fork: persisted consumer trial/paywall state is never allowed to lock
+      // the UI, regardless of the native route stored by an earlier build.
+      setActivationState("inactive");
       const startedAt = native.firstRunSummaryStartedAt ?? native.completedAt;
       const phase = native.firstRunSummaryPhase ?? "idle";
 
@@ -155,15 +155,9 @@ export function useLearningWindow(
 
   const markSummaryOpened = useCallback(() => setState(markLearningSummaryOpened()), []);
   const markSummaryRendered = useCallback(async () => {
-    if (activationState !== "summary") return;
-    await commands.setOnboardingStep(TRIAL_ACTIVATION_PAYWALL_STEP);
-    posthog.capture("first_run_summary_rendered", {
-      experiment: "first-summary-card-trial-v1",
-      variant: "summary_first",
-      eligible_new_install: true,
-    });
-    setActivationState("paywall");
-  }, [activationState]);
+    // fork: rendering a first-run summary must never enter the consumer
+    // paywall state or lock application surfaces.
+  }, []);
   // Notification persistence is native; retained for the existing view contract.
   const markNotificationSent = useCallback(() => {}, []);
   const markReadyShown = useCallback(() => {

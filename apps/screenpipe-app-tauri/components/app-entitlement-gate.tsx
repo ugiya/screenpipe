@@ -252,13 +252,18 @@ export function AppEntitlementGate({
   // immediately so restarting the webview cannot reset an access grace period.
   const shouldGateForEnterpriseLogin =
     isManagedDeployment && authenticationState === "account";
+  // fork: the personal consumer build remains usable without an account or a
+  // server-verifiable plan; enterprise gates below remain unchanged.
+  const forkLocalSkipConsumerGate = true;
   const shouldGateForConsumerLogin =
+    !forkLocalSkipConsumerGate &&
     !devBypass &&
     !devLoginSkip &&
     !isManagedDeployment &&
     !user?.token &&
     !tokenPending;
   const shouldGateForUnknownConsumerPolicy =
+    !forkLocalSkipConsumerGate &&
     !devBypass &&
     !devLoginSkip &&
     !isManagedDeployment &&

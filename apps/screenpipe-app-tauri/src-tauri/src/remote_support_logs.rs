@@ -592,9 +592,19 @@ mod imp {
         }
     }
 
+    fn spawn_automatic_support_logs(spawn_task: impl FnOnce()) {
+        // fork: this automatic sender is new since v2.5.194 and is independent
+        // of analyticsEnabled. Keep the actual task-spawn boundary inert even
+        // if its own setting is true.
+        let _ = spawn_task;
+        info!("fork-local: automatic remote support logs disabled");
+    }
+
     pub fn spawn(app: &AppHandle) {
         let app = app.clone();
-        tauri::async_runtime::spawn(async move { run(app).await });
+        spawn_automatic_support_logs(|| {
+            tauri::async_runtime::spawn(async move { run(app).await });
+        });
     }
 
     #[cfg(test)]
@@ -625,6 +635,13 @@ mod imp {
             assert!(!consent_matches(true, None, ""));
             assert!(!consent_matches(true, Some("user-b"), "user-a"));
             assert!(consent_matches(true, Some("user-a"), "user-a"));
+        }
+
+        #[test]
+        fn fork_spawn_boundary_never_starts_the_automatic_remote_support_sender() {
+            let spawned = AtomicBool::new(false);
+            spawn_automatic_support_logs(|| spawned.store(true, Ordering::SeqCst));
+            assert!(!spawned.load(Ordering::SeqCst));
         }
 
         #[test]

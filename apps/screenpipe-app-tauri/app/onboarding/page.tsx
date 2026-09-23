@@ -26,7 +26,6 @@ import { onboardingFunnel } from "@/lib/analytics/onboarding-funnel";
 import { writeBrowserLogNow } from "@/lib/logging/browser-log";
 import type { AppUser } from "@/lib/app-entitlement";
 import {
-  isTrialActivationEligible,
   TRIAL_ACTIVATION_ASSIGNMENT_SESSION_KEY,
   TRIAL_ACTIVATION_EXPERIMENT_FLAG,
   TRIAL_ACTIVATION_DEV_FORCE,
@@ -331,11 +330,11 @@ export default function OnboardingPage() {
   const localizationEnabled = useLocalizationEnabled();
   const router = useRouter();
   const { toast } = useToast();
-  const [checkoutReturnStatus] = useState(() =>
-    typeof window === "undefined"
-      ? null
-      : readOnboardingCheckoutStatus(window.location.search),
-  );
+  // fork: consumer trial activation is disabled, including stale checkout
+  // return parameters left by an earlier upstream build.
+  const [checkoutReturnStatus] = useState<
+    ReturnType<typeof readOnboardingCheckoutStatus>
+  >(() => null);
   useEffect(() => {
     if (!checkoutReturnStatus) return;
     window.sessionStorage.removeItem(TRIAL_ACTIVATION_CHECKOUT_STATE_KEY);
@@ -415,10 +414,8 @@ export default function OnboardingPage() {
     settings.deviceTier === "high"
       ? settings.deviceTier
       : "unknown";
-  const needsOnboardingCheckout = isTrialActivationEligible(
-    onboardingData.trialActivationFreshInstall === true,
-    user,
-  );
+  // fork: onboarding never assigns or requires a consumer trial/paywall.
+  const needsOnboardingCheckout = false;
   const [trialActivationAssignment, setTrialActivationAssignment] =
     useState<TrialActivationAssignment | undefined>(
       readTrialActivationAssignment,
@@ -454,12 +451,8 @@ export default function OnboardingPage() {
     trialActivationVariant === TRIAL_ACTIVATION_TREATMENT;
   const wasTrialActivationEligible =
     needsOnboardingCheckout || checkoutReturnStatus !== null;
-  const shouldShowPlanSelection =
-    !isManagedDeployment &&
-    (checkoutReturnStatus !== null ||
-      (needsOnboardingCheckout &&
-        trialActivationAssignmentResolved &&
-        !usesSummaryFirstTrial));
+  // fork: the account-free consumer build has no mandatory plan selection.
+  const shouldShowPlanSelection = false;
   // Only a fully resolved new consumer account enters mandatory checkout.
   // Manual grants, lifetime ownership, Enterprise membership, subscriptions,
   // and partially hydrated account responses all stay out. A later contextual

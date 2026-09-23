@@ -110,7 +110,7 @@ describe("native first-run summary projection", () => {
     expect(readLearningWindow().phase).toBe("done");
   });
 
-  it("persists the paywall only after the treatment summary reports a render", async () => {
+  it("does not transition a persisted trial summary into a paywall", async () => {
     mocks.getOnboardingStatus.mockResolvedValue(
       nativeStatus(
         "ready",
@@ -120,16 +120,15 @@ describe("native first-run summary projection", () => {
     );
     const { result } = renderHook(() => useLearningWindow());
 
-    await waitFor(() => expect(result.current.activationState).toBe("summary"));
+    await waitFor(() => expect(result.current.phase).toBe("ready"));
+    expect(result.current.activationState).toBe("inactive");
     await act(async () => result.current.markSummaryRendered());
 
-    expect(mocks.setOnboardingStep).toHaveBeenCalledWith(
-      "trial-activation-v1-paywall",
-    );
-    expect(mocks.capture).toHaveBeenCalledWith(
+    expect(mocks.setOnboardingStep).not.toHaveBeenCalled();
+    expect(mocks.capture).not.toHaveBeenCalledWith(
       "first_run_summary_rendered",
-      expect.objectContaining({ variant: "summary_first" }),
+      expect.anything(),
     );
-    expect(result.current.activationState).toBe("paywall");
+    expect(result.current.activationState).toBe("inactive");
   });
 });

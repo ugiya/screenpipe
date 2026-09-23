@@ -170,7 +170,66 @@ fn server_access_policy(
     has_verified_local_plan
 }
 
+fn apply_fork_local_consumer_recording_bypass(
+    is_enterprise_build: bool,
+    consumer_requires_enterprise_app: bool,
+    upstream_allowed: bool,
+) -> bool {
+    // fork: this personal consumer build records without account, plan, or
+    // trial-activation evidence; enterprise authorization stays upstream-owned.
+    (!is_enterprise_build && !consumer_requires_enterprise_app) || upstream_allowed
+}
+
+fn server_access_decision(
+    is_enterprise_build: bool,
+    dev_bypass: bool,
+    has_verified_local_plan: bool,
+    enterprise_authorized: bool,
+    consumer_requires_enterprise_app: bool,
+    authentication_allowed: bool,
+) -> bool {
+    apply_fork_local_consumer_recording_bypass(
+        is_enterprise_build,
+        consumer_requires_enterprise_app,
+        authentication_allowed
+            && server_access_policy(
+                is_enterprise_build,
+                dev_bypass,
+                has_verified_local_plan,
+                enterprise_authorized,
+                consumer_requires_enterprise_app,
+            ),
+    )
+}
+
+fn recording_access_decision(
+    is_enterprise_build: bool,
+    dev_bypass: bool,
+    has_verified_local_plan: bool,
+    enterprise_authorized: bool,
+    consumer_requires_enterprise_app: bool,
+    trial_activation_paywall: bool,
+    authentication_status: crate::startup_auth::AuthenticationStatus,
+) -> bool {
+    apply_fork_local_consumer_recording_bypass(
+        is_enterprise_build,
+        consumer_requires_enterprise_app,
+        recording_access_policy(
+            is_enterprise_build,
+            dev_bypass,
+            has_verified_local_plan,
+            enterprise_authorized,
+            consumer_requires_enterprise_app,
+            trial_activation_paywall,
+            authentication_status,
+        ),
+    )
+}
+
 pub(crate) fn server_access_allowed(app: &tauri::AppHandle, store: &SettingsStore) -> bool {
+    let is_enterprise_build = cfg!(feature = "enterprise-build");
+    let consumer_requires_enterprise_app =
+        !cfg!(debug_assertions) && store.requires_enterprise_app_for_consumer();
     let startup_authentication = app
         .try_state::<crate::startup_auth::AuthenticationStatus>()
         .map(|status| *status)
@@ -180,18 +239,17 @@ pub(crate) fn server_access_allowed(app: &tauri::AppHandle, store: &SettingsStor
     } else {
         store.has_cloud_authentication()
     };
-    if startup_authentication == crate::startup_auth::AuthenticationStatus::LoggedOut
-        && !authenticated_after_startup
-    {
-        return false;
-    }
+    let authentication_allowed = !(startup_authentication
+        == crate::startup_auth::AuthenticationStatus::LoggedOut
+        && !authenticated_after_startup);
 
-    server_access_policy(
-        cfg!(feature = "enterprise-build"),
+    server_access_decision(
+        is_enterprise_build,
         cfg!(debug_assertions),
         store.local_plan_policy() != LocalPlanPolicy::Unknown,
         crate::enterprise_policy::recording_authorized(),
-        !cfg!(debug_assertions) && store.requires_enterprise_app_for_consumer(),
+        consumer_requires_enterprise_app,
+        authentication_allowed,
     )
 }
 
@@ -199,6 +257,9 @@ pub(crate) fn server_access_allowed(app: &tauri::AppHandle, store: &SettingsStor
 /// Enterprise builds keep their native entitlement guard, and consumer builds
 /// still reject accounts that are required to use an enterprise binary.
 pub(crate) fn recording_access_allowed(app: &tauri::AppHandle, store: &SettingsStore) -> bool {
+    let is_enterprise_build = cfg!(feature = "enterprise-build");
+    let consumer_requires_enterprise_app =
+        !cfg!(debug_assertions) && store.requires_enterprise_app_for_consumer();
     let trial_activation_paywall = !crate::should_skip_onboarding()
         && OnboardingStore::get(app)
             .ok()
@@ -224,12 +285,12 @@ pub(crate) fn recording_access_allowed(app: &tauri::AppHandle, store: &SettingsS
     } else {
         resolved_authentication
     };
-    recording_access_policy(
-        cfg!(feature = "enterprise-build"),
+    recording_access_decision(
+        is_enterprise_build,
         cfg!(debug_assertions),
         store.local_plan_policy() != LocalPlanPolicy::Unknown,
         crate::enterprise_policy::recording_authorized(),
-        !cfg!(debug_assertions) && store.requires_enterprise_app_for_consumer(),
+        consumer_requires_enterprise_app,
         trial_activation_paywall,
         authentication_status,
     )
@@ -393,6 +454,27 @@ impl RecordingState {
     /// Whether capture is currently intended to be running.
     pub fn capture_intended(&self) -> bool {
         capture_intended_now(&self.wants_recording)
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_recording_state(capture_intended: bool) -> RecordingState {
+    // fork: production-boundary tests need the real state object so command
+    // transitions prove they preserve the watchdog's capture intent.
+    RecordingState {
+        server_lifecycle: Arc::new(Mutex::new(())),
+        server: Arc::new(Mutex::new(None)),
+        server_shutdown: Default::default(),
+        capture: Arc::new(Mutex::new(None)),
+        is_starting: Arc::new(AtomicBool::new(false)),
+        is_starting_capture: Arc::new(AtomicBool::new(false)),
+        last_spawn_epoch: Arc::new(AtomicU64::new(0)),
+        wants_recording: Arc::new(AtomicBool::new(capture_intended)),
+        deferred_account_start: Default::default(),
+        interrupted_meeting: Arc::new(Mutex::new(None)),
+        cloud_token: Arc::new(arc_swap::ArcSwap::new(Arc::new(None))),
+        history_access: screenpipe_engine::history_access::HistoryAccessPolicy::unrestricted(),
+        db_wedge_breaker: new_db_wedge_breaker(),
     }
 }
 
@@ -2091,7 +2173,10 @@ mod local_api_auth_tests {
 
 #[cfg(test)]
 mod recording_access_tests {
-    use super::{recording_access_policy, server_access_policy};
+    use super::{
+        recording_access_decision, recording_access_policy, server_access_decision,
+        server_access_policy,
+    };
     use crate::startup_auth::{AuthenticationStatus, DeferredAccountStart};
     use crate::store::{LocalPlanPolicy, SettingsStore};
 
@@ -2224,6 +2309,40 @@ mod recording_access_tests {
             true,
             false,
             false,
+            false,
+            AuthenticationStatus::LoggedOut,
+        ));
+    }
+
+    #[test]
+    fn production_gate_composition_allows_signed_out_consumer_start_and_recovery() {
+        // Exercise the same composed decisions as native startup, command
+        // starts, and watchdog recovery: signed out, unknown plan, and a
+        // persisted trial paywall all remain allowed for this consumer fork.
+        assert!(server_access_decision(
+            false, false, false, false, false, false,
+        ));
+        assert!(recording_access_decision(
+            false,
+            false,
+            false,
+            false,
+            false,
+            true,
+            AuthenticationStatus::LoggedOut,
+        ));
+
+        // Enterprise authorization and the managed consumer-binary mismatch
+        // remain hard boundaries in the same production composition.
+        assert!(!server_access_decision(
+            true, false, false, false, false, false,
+        ));
+        assert!(!recording_access_decision(
+            false,
+            false,
+            false,
+            false,
+            true,
             false,
             AuthenticationStatus::LoggedOut,
         ));

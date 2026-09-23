@@ -634,7 +634,7 @@ async fn main() {
         }
     });
     // Helper: look up a bool key in the store JSON (check both top-level and nested "settings")
-    let store_bool = |key: &str| -> Option<bool> {
+    let _store_bool = |key: &str| -> Option<bool> {
         store_json.as_ref().and_then(|data| {
             data.get(key).and_then(|v| v.as_bool()).or_else(|| {
                 data.get("settings")
@@ -643,15 +643,10 @@ async fn main() {
             })
         })
     };
-    // CI / automation (GitHub Actions, etc.) always wins over the settings
-    // opt-in so the desktop-app e2e suite never reaches Sentry/PostHog.
-    let telemetry_disabled = store_bool("analyticsEnabled")
-        .map(|enabled| !enabled)
-        .unwrap_or(false)
-        || screenpipe_engine::analytics::telemetry_disabled_by_env();
-    // The webview gets this same decision through the
-    // `is_telemetry_disabled_by_env` command (see commands.rs); it cannot read
-    // the process env itself.
+    // fork: hard-disable app-host Sentry regardless of persisted settings or
+    // process environment. Webview and embedded-engine telemetry are disabled
+    // at their own construction boundaries.
+    let telemetry_disabled = true;
 
     let app_version = env!("CARGO_PKG_VERSION");
     let sentry_guard = if !telemetry_disabled {
@@ -2184,7 +2179,9 @@ async fn main() {
                 });
             }
 
-            let is_analytics_enabled = store.recording.analytics_enabled;
+            // fork: never construct the Tauri-host PostHog manager or run its
+            // attribution lookup, even if an old store opted into analytics.
+            let is_analytics_enabled = false;
 
             let is_autostart_enabled = store
                 .auto_start_enabled;

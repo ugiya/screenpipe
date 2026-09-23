@@ -114,6 +114,12 @@ fn retention_policy_changed(
         || request.mode.is_some_and(|mode| mode != current.mode)
 }
 
+fn requested_retention_enabled(current_enabled: bool, requested_enabled: Option<bool>) -> bool {
+    // fork: omitting enabled only edits the current policy; it cannot consent
+    // to an off-to-on transition, including on a fresh runtime.
+    requested_enabled.unwrap_or(current_enabled)
+}
+
 #[derive(Debug, Serialize, OaSchema)]
 pub struct RetentionStatusResponse {
     pub enabled: bool,
@@ -161,7 +167,10 @@ pub async fn retention_configure(
 
     let mut guard = state.retention_state.inner.write().await;
 
-    let wants_enabled = request.enabled.unwrap_or(true);
+    let wants_enabled = requested_retention_enabled(
+        guard.as_ref().is_some_and(|runtime| runtime.config.enabled),
+        request.enabled,
+    );
 
     match guard.as_mut() {
         Some(runtime) => {
@@ -675,6 +684,18 @@ async fn do_local_cleanup(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fork_configure_without_enabled_preserves_off_state() {
+        // fork: exercise the same request parser and decision used by POST
+        // /retention/configure for empty and days-only payloads.
+        for payload in [json!({}), json!({"retention_days": 7})] {
+            let request: RetentionConfigureRequest = serde_json::from_value(payload).unwrap();
+            assert!(!requested_retention_enabled(false, request.enabled));
+        }
+        assert!(requested_retention_enabled(true, None));
+        assert!(requested_retention_enabled(false, Some(true)));
+    }
 
     #[test]
     fn enabled_policy_change_restarts_cleanup_before_new_settings_apply() {

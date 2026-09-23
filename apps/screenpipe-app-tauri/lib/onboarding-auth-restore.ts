@@ -20,10 +20,12 @@ export function shouldRestoreOnboardingLogin({
   isLoggedIn: boolean;
   mappedSlide: string;
 }): boolean {
-  return (
-    !isManagedDeployment &&
-    startupAuthenticationStatus === "logged_out" &&
-    !isLoggedIn &&
-    mappedSlide !== "login"
-  );
+  // fork: consumer onboarding is account-optional, so losing a session must
+  // not replace a saved permissions/setup step with the login gate. Managed
+  // deployment authentication is handled separately by the onboarding page.
+  void isManagedDeployment;
+  void startupAuthenticationStatus;
+  void isLoggedIn;
+  void mappedSlide;
+  return false;
 }

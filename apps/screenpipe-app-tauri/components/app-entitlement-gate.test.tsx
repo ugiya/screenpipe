@@ -291,7 +291,9 @@ describe("AppEntitlementGate", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("waits for build detection before stopping a gated session", async () => {
+  // fork: unresolved build detection may show a neutral shell, but resolving
+  // to the consumer build must reveal the app without stopping recording.
+  it("resolves consumer build detection without stopping recording", async () => {
     mocks.enterprise.isManagedDeploymentResolved = false;
 
     const { rerender } = render(
@@ -302,11 +304,11 @@ describe("AppEntitlementGate", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(mocks.stopScreenpipe).not.toHaveBeenCalled();
 
-    // The session is still gated after resolution. The effect must now stop
-    // recording, proving the resolution flag is both a guard and a dependency.
     mocks.enterprise.isManagedDeploymentResolved = true;
     rerender(<AppEntitlementGate>{protectedApp}</AppEntitlementGate>);
-    await waitFor(() => expect(mocks.stopScreenpipe).toHaveBeenCalled());
+    expect(screen.getByTestId("protected-app")).toBeInTheDocument();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mocks.stopScreenpipe).not.toHaveBeenCalled();
   });
 
   it("surfaces a recoverable error when build detection cannot finish", () => {
@@ -410,15 +412,14 @@ describe("AppEntitlementGate", () => {
     expect(screen.getByTestId("protected-app")).toBeInTheDocument();
   });
 
-  it("asks a signed-out user to sign in and never reveals the app", () => {
+  // fork: signed-out consumer state is deliberately not an application wall.
+  it("reveals the app to a signed-out user without stopping recording", () => {
     mocks.state.user = null;
     render(<AppEntitlementGate>{protectedApp}</AppEntitlementGate>);
 
-    expect(screen.getByText(/sign in required/i)).toBeInTheDocument();
-    expect(screen.queryByTestId("protected-app")).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: /sign in/i }));
-    expect(mocks.openLoginWindow).toHaveBeenCalled();
+    expect(screen.getByTestId("protected-app")).toBeInTheDocument();
+    expect(screen.queryByText(/sign in required/i)).not.toBeInTheDocument();
+    expect(mocks.stopScreenpipe).not.toHaveBeenCalled();
   });
 
   it.each(["main", "main-window", "search"])(
@@ -508,7 +509,8 @@ describe("AppEntitlementGate", () => {
     expect(mocks.stopScreenpipe).not.toHaveBeenCalled();
   });
 
-  it("gates a conflicting legacy shell until its plan can be verified", async () => {
+  // fork: cached identity without verifiable plan is a supported offline state.
+  it("keeps a conflicting legacy shell open without stopping recording", async () => {
     mocks.state.user = baseUser({
       cloud_subscribed: true,
       app_entitled: false,
@@ -517,11 +519,12 @@ describe("AppEntitlementGate", () => {
     });
     render(<AppEntitlementGate>{protectedApp}</AppEntitlementGate>);
 
-    expect(screen.queryByTestId("protected-app")).not.toBeInTheDocument();
+    expect(screen.getByTestId("protected-app")).toBeInTheDocument();
     expect(
-      screen.getByRole("heading", { name: /refresh access/i }),
-    ).toBeInTheDocument();
-    await waitFor(() => expect(mocks.stopScreenpipe).toHaveBeenCalled());
+      screen.queryByRole("heading", { name: /refresh access/i }),
+    ).not.toBeInTheDocument();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mocks.stopScreenpipe).not.toHaveBeenCalled();
   });
 
   it("renders the app for a fresh entitled account without stopping capture", () => {
@@ -542,7 +545,8 @@ describe("AppEntitlementGate", () => {
     expect(mocks.stopScreenpipe).not.toHaveBeenCalled();
   });
 
-  it("gates and stops when paid freshness expires without an API response", async () => {
+  // fork: stale plan evidence cannot wall the local app or stop its recorder.
+  it("stays open when paid freshness expires without an API response", async () => {
     vi.useFakeTimers();
     try {
       const now = new Date("2026-06-05T12:00:00.000Z");
@@ -567,17 +571,18 @@ describe("AppEntitlementGate", () => {
         await vi.advanceTimersByTimeAsync(1_001);
       });
 
-      expect(screen.queryByTestId("protected-app")).not.toBeInTheDocument();
+      expect(screen.getByTestId("protected-app")).toBeInTheDocument();
       expect(
-        screen.getByRole("heading", { name: /refresh access/i }),
-      ).toBeInTheDocument();
-      expect(mocks.stopScreenpipe).toHaveBeenCalled();
+        screen.queryByRole("heading", { name: /refresh access/i }),
+      ).not.toBeInTheDocument();
+      expect(mocks.stopScreenpipe).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it("rechecks and gates paid evidence after a backwards clock jump", async () => {
+  // fork: clock skew can invalidate paid evidence without revoking local use.
+  it("stays open when a backwards clock jump invalidates paid evidence", async () => {
     vi.useFakeTimers();
     try {
       const now = new Date("2026-06-05T12:00:00.000Z");
@@ -604,11 +609,11 @@ describe("AppEntitlementGate", () => {
         await vi.advanceTimersByTimeAsync(60_000);
       });
 
-      expect(screen.queryByTestId("protected-app")).not.toBeInTheDocument();
+      expect(screen.getByTestId("protected-app")).toBeInTheDocument();
       expect(
-        screen.getByRole("heading", { name: /refresh access/i }),
-      ).toBeInTheDocument();
-      expect(mocks.stopScreenpipe).toHaveBeenCalled();
+        screen.queryByRole("heading", { name: /refresh access/i }),
+      ).not.toBeInTheDocument();
+      expect(mocks.stopScreenpipe).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }
@@ -659,9 +664,8 @@ describe("AppEntitlementGate", () => {
     expect(mocks.loadUser).not.toHaveBeenCalled();
   });
 
-  it("gates unknown tokenless evidence immediately across remounts", async () => {
-    // A stale paid-looking shell is Unknown, not proof of paid access. A webview
-    // reload must not restart hydration grace and reveal the protected app.
+  // fork: unknown tokenless evidence is the expected durable signed-out state.
+  it("keeps unknown tokenless evidence open across remounts", async () => {
     mocks.state.user = baseUser({
       id: "u1",
       token: undefined,
@@ -678,14 +682,15 @@ describe("AppEntitlementGate", () => {
     const first = render(
       <AppEntitlementGate>{protectedApp}</AppEntitlementGate>,
     );
-    expect(screen.queryByTestId("protected-app")).not.toBeInTheDocument();
-    expect(screen.getByText(/sign in required/i)).toBeInTheDocument();
-    await waitFor(() => expect(mocks.stopScreenpipe).toHaveBeenCalled());
+    expect(screen.getByTestId("protected-app")).toBeInTheDocument();
+    expect(screen.queryByText(/sign in required/i)).not.toBeInTheDocument();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mocks.stopScreenpipe).not.toHaveBeenCalled();
 
     first.unmount();
     render(<AppEntitlementGate>{protectedApp}</AppEntitlementGate>);
-    expect(screen.queryByTestId("protected-app")).not.toBeInTheDocument();
-    expect(screen.getByText(/sign in required/i)).toBeInTheDocument();
+    expect(screen.getByTestId("protected-app")).toBeInTheDocument();
+    expect(screen.queryByText(/sign in required/i)).not.toBeInTheDocument();
   });
 
   it("stays open when access flips mid-session and never stops the recorder", async () => {
@@ -728,7 +733,8 @@ describe("AppEntitlementGate", () => {
     expect(mocks.stopScreenpipe).not.toHaveBeenCalled();
   });
 
-  it("still walls and stops on a real sign-out, even after a prior entitled session", async () => {
+  // fork: signing out removes cloud identity, not local recorder access.
+  it("keeps local access and recording on a real sign-out", async () => {
     mocks.state.user = baseUser({
       id: "u1",
       app_entitled: true,
@@ -746,16 +752,17 @@ describe("AppEntitlementGate", () => {
     );
     expect(screen.getByTestId("protected-app")).toBeInTheDocument();
 
-    // A real sign-out nulls the whole user — session-sticky must NOT leak access.
     mocks.state.user = null;
     rerender(<AppEntitlementGate>{protectedApp}</AppEntitlementGate>);
 
-    expect(screen.getByText(/sign in required/i)).toBeInTheDocument();
-    expect(screen.queryByTestId("protected-app")).not.toBeInTheDocument();
-    await waitFor(() => expect(mocks.stopScreenpipe).toHaveBeenCalled());
+    expect(screen.queryByText(/sign in required/i)).not.toBeInTheDocument();
+    expect(screen.getByTestId("protected-app")).toBeInTheDocument();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mocks.stopScreenpipe).not.toHaveBeenCalled();
   });
 
-  it("reports the gate once across re-renders of the same gated state", () => {
+  // fork: consumer account state does not emit gate telemetry because it is not a gate.
+  it("does not report a consumer gate across signed-out re-renders", () => {
     mocks.state.user = null;
     const { rerender } = render(
       <AppEntitlementGate>{protectedApp}</AppEntitlementGate>,
@@ -766,7 +773,8 @@ describe("AppEntitlementGate", () => {
     const gateShown = mocks.capture.mock.calls.filter(
       (c) => c[0] === "app_entitlement_gate_shown",
     );
-    expect(gateShown).toHaveLength(1);
+    expect(gateShown).toHaveLength(0);
+    expect(screen.getByTestId("protected-app")).toBeInTheDocument();
   });
 
   it("ignores the localStorage account seed in a normal production bundle", async () => {
@@ -785,7 +793,9 @@ describe("AppEntitlementGate", () => {
       await Promise.resolve();
 
       expect(mocks.updateSettings).not.toHaveBeenCalled();
-      expect(screen.getByText(/sign in required/i)).toBeInTheDocument();
+      // fork: rejecting the E2E seed must not reinstate the consumer wall.
+      expect(screen.getByTestId("protected-app")).toBeInTheDocument();
+      expect(screen.queryByText(/sign in required/i)).not.toBeInTheDocument();
     } finally {
       if (originalStorage) {
         Object.defineProperty(window, "localStorage", originalStorage);
@@ -1048,19 +1058,21 @@ describe("AppEntitlementGate", () => {
     expect(screen.getByTestId("protected-app")).toBeInTheDocument();
   });
 
-  it("resumes recording when sign-in clears the consumer gate", async () => {
+  // fork: sign-in changes cloud identity only; no consumer gate owns lifecycle.
+  it("does not stop or restart recording when a user signs in", async () => {
     mocks.state.user = null;
     const { rerender } = render(
       <AppEntitlementGate>{protectedApp}</AppEntitlementGate>,
     );
-    await waitFor(() => expect(mocks.stopScreenpipe).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mocks.stopScreenpipe).not.toHaveBeenCalled();
+    expect(screen.getByTestId("protected-app")).toBeInTheDocument();
 
     mocks.state.user = baseUser();
     rerender(<AppEntitlementGate>{protectedApp}</AppEntitlementGate>);
 
-    await waitFor(() =>
-      expect(mocks.spawnScreenpipe).toHaveBeenCalledWith(null),
-    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mocks.spawnScreenpipe).not.toHaveBeenCalled();
     expect(screen.getByTestId("protected-app")).toBeInTheDocument();
   });
 });

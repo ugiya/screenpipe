@@ -18,7 +18,6 @@ const mocks = vi.hoisted(() => ({
   capture: vi.fn(),
   openLoginWindow: vi.fn(),
   hasAppEntitlement: vi.fn(),
-  isDevLoginSkipEnabled: vi.fn().mockReturnValue(false),
   // Captured Tauri event handlers, so tests can drive the system-browser
   // login handoff without a running backend.
   listeners: new Map<string, (event: { payload: unknown }) => void>(),
@@ -42,7 +41,6 @@ vi.mock("@/lib/hooks/use-settings", () => ({
 }));
 vi.mock("@/lib/app-entitlement", () => ({
   hasAppEntitlement: (u: any) => mocks.hasAppEntitlement(u),
-  isDevLoginSkipEnabled: () => mocks.isDevLoginSkipEnabled(),
 }));
 vi.mock("@/lib/utils/tauri", () => ({
   commands: { openLoginWindow: mocks.openLoginWindow },
@@ -76,7 +74,6 @@ beforeEach(() => {
   mocks.updateSettings.mockClear();
   mocks.capture.mockClear();
   mocks.hasAppEntitlement.mockReset();
-  mocks.isDevLoginSkipEnabled.mockReturnValue(false);
   mocks.openLoginWindow.mockClear();
   mocks.listeners.clear();
   mocks.unlisten.mockClear();
@@ -84,19 +81,26 @@ beforeEach(() => {
 afterEach(() => vi.clearAllTimers());
 
 describe("onboarding login gate", () => {
-  it("hides the dev skip unless its dedicated build flag is enabled", async () => {
+  it("lets a signed-out consumer continue without an account", async () => {
     vi.useFakeTimers();
-    const { unmount } = render(<OnboardingLogin handleNextSlide={vi.fn()} />);
+    const next = vi.fn();
+    render(<OnboardingLogin handleNextSlide={next} />);
+    await act(async () => vi.advanceTimersByTime(800));
+    fireEvent.click(screen.getByText(/continue without an account/i));
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(mocks.capture).toHaveBeenCalledWith("onboarding_login_skipped");
+    vi.useRealTimers();
+  });
+
+  it("keeps managed account authentication non-skippable", async () => {
+    vi.useFakeTimers();
+    render(
+      <OnboardingLogin handleNextSlide={vi.fn()} suppressAutoAdvance />,
+    );
     await act(async () => vi.advanceTimersByTime(800));
     expect(
-      screen.queryByText(/skip for dev/i),
+      screen.queryByText(/continue without an account/i),
     ).not.toBeInTheDocument();
-
-    unmount();
-    mocks.isDevLoginSkipEnabled.mockReturnValue(true);
-    render(<OnboardingLogin handleNextSlide={vi.fn()} />);
-    await act(async () => vi.advanceTimersByTime(800));
-    expect(screen.getByText(/skip for dev/i)).toBeInTheDocument();
     vi.useRealTimers();
   });
 

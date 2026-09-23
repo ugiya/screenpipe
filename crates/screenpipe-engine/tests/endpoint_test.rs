@@ -80,6 +80,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fork_retention_configure_omitted_enabled_stays_off() {
+        // fork: an omitted enabled flag cannot start deletion through the
+        // actual HTTP route, including when days are changed first.
+        let (app, _) = setup_test_app().await;
+        for payload in [
+            serde_json::json!({}),
+            serde_json::json!({"retention_days": 7}),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/retention/configure")
+                        .header("content-type", "application/json")
+                        .body(Body::from(payload.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            let configured: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(configured["enabled"], false);
+
+            let status = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/retention/status")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(status.status(), StatusCode::OK);
+            let body = to_bytes(status.into_body(), usize::MAX).await.unwrap();
+            let current: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(current["enabled"], false);
+        }
+    }
+
+    #[tokio::test]
     async fn frame_thumbnail_endpoint_resizes_caches_and_invalidates_snapshot() {
         let (app, db) = setup_test_app().await;
         let temp_dir = tempfile::tempdir().unwrap();

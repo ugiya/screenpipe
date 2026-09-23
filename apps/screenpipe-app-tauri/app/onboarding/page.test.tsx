@@ -320,7 +320,23 @@ describe("enterprise onboarding authentication", () => {
     });
   });
 
-  it("restores the plan controller after hosted checkout returns", async () => {
+  it("lets a fresh signed-out consumer continue into setup", async () => {
+    mocks.enterprisePolicy.isManagedDeployment = false;
+    mocks.settings.user = null;
+    onboardingData.currentStep = null;
+
+    render(<OnboardingPage />);
+    fireEvent.click(
+      screen.getByRole("button", { name: "complete regular sign in" }),
+    );
+
+    await waitFor(() =>
+      expect(mocks.setOnboardingStep).toHaveBeenCalledWith("acquisition"),
+    );
+    expect(screen.queryByText("plan selection")).not.toBeInTheDocument();
+  });
+
+  it.skip("restores the plan controller after hosted checkout returns", async () => {
     window.history.replaceState({}, "", "/onboarding?checkout=complete");
     mocks.enterprisePolicy.isManagedDeployment = false;
     mocks.settings.user = {
@@ -338,7 +354,7 @@ describe("enterprise onboarding authentication", () => {
     );
   });
 
-  it("returns a completed summary checkout to Home and unlocks the app", async () => {
+  it.skip("returns a completed summary checkout to Home and unlocks the app", async () => {
     window.history.replaceState({}, "", "/onboarding?checkout=complete");
     mocks.enterprisePolicy.isManagedDeployment = false;
     mocks.settings.user = {
@@ -364,7 +380,7 @@ describe("enterprise onboarding authentication", () => {
     expect(mocks.routerReplace).toHaveBeenCalledWith("/home");
   });
 
-  it("returns a cancelled summary checkout to the locked summary", async () => {
+  it.skip("returns a cancelled summary checkout to the locked summary", async () => {
     window.history.replaceState({}, "", "/onboarding?checkout=cancelled");
     window.sessionStorage.setItem(
       TRIAL_ACTIVATION_CHECKOUT_STATE_KEY,
@@ -470,12 +486,12 @@ describe("enterprise onboarding authentication", () => {
       expect(mocks.setWindowSize).toHaveBeenCalledWith("Onboarding", 500, 680),
     );
 
-    // Advancing onto the payment slide, the step that used to widen the window
-    // to 760x720, must not resize it again.
+    // fork: consumer onboarding now advances past engine without a payment
+    // slide, and the next setup surface must retain the same window size.
     fireEvent.click(
       await screen.findByRole("button", { name: "finish engine" }),
     );
-    expect(await screen.findByText("plan selection")).toBeInTheDocument();
+    expect(await screen.findByText("recommended setup")).toBeInTheDocument();
 
     expect(mocks.setWindowSize).toHaveBeenCalledTimes(1);
   });
@@ -496,7 +512,7 @@ describe("enterprise onboarding authentication", () => {
     expect(screen.queryByText("connect apps")).not.toBeInTheDocument();
   });
 
-  it("shows recommended setup after plan selection for a fresh unentitled control account", async () => {
+  it("skips plan selection for a fresh unentitled consumer", async () => {
     mocks.enterprisePolicy.isManagedDeployment = false;
     mocks.trialActivationVariant = "control";
     onboardingData.trialActivationFreshInstall = true;
@@ -512,11 +528,8 @@ describe("enterprise onboarding authentication", () => {
       await screen.findByRole("button", { name: "finish engine" }),
     );
 
-    expect(await screen.findByText("plan selection")).toBeInTheDocument();
-    expect(mocks.completeOnboarding).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByRole("button", { name: "continue free plan" }));
     expect(await screen.findByText("recommended setup")).toBeInTheDocument();
+    expect(screen.queryByText("plan selection")).not.toBeInTheDocument();
     expect(mocks.completeOnboarding).not.toHaveBeenCalled();
 
     fireEvent.click(
@@ -530,7 +543,7 @@ describe("enterprise onboarding authentication", () => {
     );
   });
 
-  it("does not expose the control checkout before the authenticated flag resolves", async () => {
+  it.skip("does not expose the control checkout before the authenticated flag resolves", async () => {
     mocks.enterprisePolicy.isManagedDeployment = false;
     mocks.trialActivationVariant = "summary_first";
     mocks.featureFlagsReady = false;
@@ -587,7 +600,7 @@ describe("enterprise onboarding authentication", () => {
     expect(screen.queryByText("plan selection")).not.toBeInTheDocument();
   });
 
-  it("falls back explicitly to control when authenticated flag loading fails", async () => {
+  it.skip("falls back explicitly to control when authenticated flag loading fails", async () => {
     mocks.enterprisePolicy.isManagedDeployment = false;
     mocks.featureFlagsError = true;
     onboardingData.trialActivationFreshInstall = true;
@@ -610,7 +623,7 @@ describe("enterprise onboarding authentication", () => {
     expect(await screen.findByText("plan selection")).toBeInTheDocument();
   });
 
-  it("continues immediately when fresh authenticated flags omit the disabled experiment", async () => {
+  it.skip("continues immediately when fresh authenticated flags omit the disabled experiment", async () => {
     mocks.enterprisePolicy.isManagedDeployment = false;
     mocks.trialActivationVariant = undefined;
     onboardingData.trialActivationFreshInstall = true;
@@ -637,7 +650,7 @@ describe("enterprise onboarding authentication", () => {
       .toBe("control");
   });
 
-  it("records a fresh login once when assignment temporarily unmounts the real login gate", async () => {
+  it.skip("records a fresh login once when assignment temporarily unmounts the real login gate", async () => {
     HTMLCanvasElement.prototype.getContext = vi.fn(() => null) as any;
     mocks.useRealLoginGate = true;
     mocks.enterprisePolicy.isManagedDeployment = false;
@@ -699,7 +712,7 @@ describe("enterprise onboarding authentication", () => {
       .toHaveLength(1);
   });
 
-  it("restores the pinned route instead of reassigning after checkout navigation", async () => {
+  it.skip("restores the pinned route instead of reassigning after checkout navigation", async () => {
     mocks.enterprisePolicy.isManagedDeployment = false;
     mocks.trialActivationVariant = "summary_first";
     window.sessionStorage.setItem(
@@ -725,7 +738,7 @@ describe("enterprise onboarding authentication", () => {
     expect(mocks.reloadFeatureFlags).not.toHaveBeenCalled();
   });
 
-  it("assigns a fresh-install treatment user regardless of a missing plan", async () => {
+  it.skip("assigns a fresh-install treatment user regardless of a missing plan", async () => {
     mocks.enterprisePolicy.isManagedDeployment = false;
     mocks.trialActivationVariant = "summary_first";
     onboardingData.trialActivationFreshInstall = true;
@@ -769,7 +782,7 @@ describe("enterprise onboarding authentication", () => {
     });
   });
 
-  it("retries a transient summary-step write before completing onboarding", async () => {
+  it.skip("retries a transient summary-step write before completing onboarding", async () => {
     mocks.enterprisePolicy.isManagedDeployment = false;
     mocks.trialActivationVariant = "summary_first";
     onboardingData.trialActivationFreshInstall = true;
@@ -792,7 +805,7 @@ describe("enterprise onboarding authentication", () => {
     });
   });
 
-  it("releases the final-step click lock when both automatic attempts fail", async () => {
+  it.skip("releases the final-step click lock when both automatic attempts fail", async () => {
     mocks.enterprisePolicy.isManagedDeployment = false;
     mocks.trialActivationVariant = "summary_first";
     onboardingData.trialActivationFreshInstall = true;
@@ -820,7 +833,7 @@ describe("enterprise onboarding authentication", () => {
     await waitFor(() => expect(mocks.completeOnboarding).toHaveBeenCalled());
   });
 
-  it("keeps real setup selections and completed tasks through pending native completion, failure and retry", async () => {
+  it.skip("keeps real setup selections and completed tasks through pending native completion, failure and retry", async () => {
     mocks.useRealSetupCompletion = true;
     mocks.enterprisePolicy.isManagedDeployment = false;
     mocks.settings.user = { token: "qa-token", has_payment_method: false, entitlement_source: "none" };
@@ -985,7 +998,7 @@ describe("enterprise onboarding authentication", () => {
     expect(screen.queryByText("plan selection")).not.toBeInTheDocument();
   });
 
-  it("returns a signed-out consumer with a persisted engine step to login", async () => {
+  it("restores a signed-out consumer to the persisted engine step", async () => {
     mocks.enterprisePolicy.isManagedDeployment = false;
     mocks.settings.user = null;
     onboardingData.currentStep = "engine";
@@ -996,8 +1009,8 @@ describe("enterprise onboarding authentication", () => {
       </StartupAuthenticationContext.Provider>,
     );
 
-    expect(await screen.findByText("regular sign in")).toBeInTheDocument();
-    expect(screen.queryByText("engine")).not.toBeInTheDocument();
+    expect(await screen.findByText("engine")).toBeInTheDocument();
+    expect(screen.queryByText("regular sign in")).not.toBeInTheDocument();
   });
 
   it("restores an authenticated consumer after a logged-out startup", async () => {
@@ -1348,7 +1361,9 @@ describe("enterprise onboarding authentication", () => {
     consoleError.mockRestore();
   });
 
-  describe("real PostHog assignment transport", () => {
+  // fork: consumer trial assignment is disabled, so its PostHog transport is
+  // intentionally unreachable in this build.
+  describe.skip("real PostHog assignment transport", () => {
     type FlagRequest = {
       data: { distinct_id?: string };
       callback?: (response: { statusCode: number; json?: object }) => void;

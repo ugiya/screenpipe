@@ -9,7 +9,6 @@ import { useSettings } from "@/lib/hooks/use-settings";
 import { commands } from "@/lib/utils/tauri";
 import { motion, AnimatePresence } from "framer-motion";
 import posthog from "posthog-js";
-import { isDevLoginSkipEnabled } from "@/lib/app-entitlement";
 import { ArrowRight } from "lucide-react";
 import { LOCALITY_DETAIL } from "./trust-disclosure";
 
@@ -253,7 +252,9 @@ const OnboardingLogin: React.FC<OnboardingLoginProps> = ({
   const [browserFailure, setBrowserFailure] = useState<string | null>(null);
   const bgRef = useRef<HTMLCanvasElement>(null);
   const btnRef = useRef<HTMLCanvasElement>(null);
-  const canSkipLogin = isDevLoginSkipEnabled();
+  // fork: consumer onboarding must remain usable without an account. Managed
+  // deployments pass suppressAutoAdvance and retain their required auth flow.
+  const canSkipLogin = !suppressAutoAdvance;
 
   const isLoggedIn = !!settings.user?.token;
 
@@ -309,7 +310,7 @@ const OnboardingLogin: React.FC<OnboardingLoginProps> = ({
   }, [suppressAutoAdvance]);
 
   const handleSkip = useCallback(() => {
-    posthog.capture("onboarding_login_skipped_dev");
+    posthog.capture("onboarding_login_skipped");
     handleNextSlide();
   }, [handleNextSlide]);
 
@@ -507,7 +508,7 @@ const OnboardingLogin: React.FC<OnboardingLoginProps> = ({
               onClick={handleSkip}
               className="font-mono text-xs text-muted-foreground/70 hover:text-foreground underline underline-offset-4 decoration-muted-foreground/40 hover:decoration-foreground transition-colors mt-8 tracking-wide"
             >
-              Skip for dev, continue without an account
+              Continue without an account
             </motion.button>
           )}
         </AnimatePresence>

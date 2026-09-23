@@ -73,9 +73,10 @@ pub(crate) fn env_value_truthy(value: &str) -> bool {
 }
 
 /// Initialize analytics with telemetry enabled/disabled
-pub fn init(telemetry_enabled: bool) {
-    // CI / automation always wins over the settings opt-in.
-    let telemetry_enabled = telemetry_enabled && !telemetry_disabled_by_env();
+pub fn init(_telemetry_enabled: bool) {
+    // fork: this personal build never enables engine PostHog, regardless of
+    // callers or stored settings. Env kill-switch parsing is tested separately.
+    let telemetry_enabled = false;
     TELEMETRY_ENABLED.store(telemetry_enabled, Ordering::SeqCst);
     // Force lazy initialization
     let _ = &*ANALYTICS;

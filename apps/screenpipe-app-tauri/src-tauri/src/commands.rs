@@ -9,6 +9,9 @@ mod native_actions;
 // Public so the generated command registry can name the handler by full path.
 pub(crate) mod overlay_anchor;
 
+#[cfg(target_os = "macos")]
+use crate::window::GatedPanelPlacement;
+use crate::window::GatedWindowPlacement;
 use crate::{
     analytics::{AnalyticsManager, Attribution},
     native_notification, native_shortcut_reminder,
@@ -19,9 +22,6 @@ use crate::{
     updates::is_enterprise_build,
     window::{RewindWindowId, ShowRewindWindow},
 };
-#[cfg(target_os = "macos")]
-use crate::window::GatedPanelPlacement;
-use crate::window::GatedWindowPlacement;
 use sha2::{Digest, Sha256};
 use tauri::{Emitter, Manager};
 use tauri_plugin_opener::OpenerExt;
@@ -65,11 +65,11 @@ mod tests {
     use super::{
         enterprise_license_key_sha256, fallback_local_api_config, is_login_callback_scheme,
         merge_enterprise_file_configs, normalize_enterprise_config_value,
-        persist_enterprise_device_config,
+        notification_belongs_to_overlay, persist_enterprise_device_config,
         persist_recovered_enterprise_device_config, read_enterprise_config_from_path,
-        notification_belongs_to_overlay, recovery_anchor_license_key, save_enterprise_team_config,
-        scan_chat_entries_by_mtime, shortcut_overlay_hidden_by_choice,
-        should_resume_snoozed_overlay, EnterpriseFileConfig, RecoveredEnterpriseDeviceConfig,
+        recovery_anchor_license_key, save_enterprise_team_config, scan_chat_entries_by_mtime,
+        shortcut_overlay_hidden_by_choice, should_resume_snoozed_overlay, EnterpriseFileConfig,
+        RecoveredEnterpriseDeviceConfig,
     };
 
     /// `get_local_api_config` must never await the server mutex.
@@ -295,8 +295,11 @@ mod tests {
 
         // URL-only file: valid "MDM points at the control plane, sign-in
         // supplies the license" deployment.
-        std::fs::write(&path, r#"{"ingest_url":"https://cp.acme.com/api/enterprise/ingest"}"#)
-            .unwrap();
+        std::fs::write(
+            &path,
+            r#"{"ingest_url":"https://cp.acme.com/api/enterprise/ingest"}"#,
+        )
+        .unwrap();
         let cfg = read_enterprise_config_from_path(&path).unwrap();
         assert!(cfg.license_key.is_none());
         assert_eq!(
@@ -467,8 +470,7 @@ pub struct LowDiskGuardConfig {
 pub fn get_low_disk_guard_config() -> LowDiskGuardConfig {
     LowDiskGuardConfig {
         threshold_bytes: screenpipe_events::LOW_DISK_THRESHOLD_BYTES,
-        check_interval_seconds:
-            screenpipe_engine::disk_pressure::LOW_DISK_CHECK_INTERVAL_SECS,
+        check_interval_seconds: screenpipe_engine::disk_pressure::LOW_DISK_CHECK_INTERVAL_SECS,
     }
 }
 
@@ -628,8 +630,8 @@ pub fn get_chats_dir() -> Result<String, String> {
     let chats = data_dir.join("chats");
     std::fs::create_dir_all(&chats).map_err(|e| e.to_string())?;
 
-    let is_isolated = std::env::var("SCREENPIPE_E2E_SEED").is_ok()
-        || crate::dev_isolation::is_active();
+    let is_isolated =
+        std::env::var("SCREENPIPE_E2E_SEED").is_ok() || crate::dev_isolation::is_active();
     if !is_isolated {
         if let Some(home) = dirs::home_dir() {
             let legacy = home.join(".screenpipe").join("chats");
@@ -2497,8 +2499,14 @@ mod search_navigation_origin_tests {
 
     #[test]
     fn accepts_only_timeline_host_labels() {
-        assert_eq!(validated_timeline_origin(Some("home")).unwrap(), Some("home"));
-        assert_eq!(validated_timeline_origin(Some("main")).unwrap(), Some("main"));
+        assert_eq!(
+            validated_timeline_origin(Some("home")).unwrap(),
+            Some("home")
+        );
+        assert_eq!(
+            validated_timeline_origin(Some("main")).unwrap(),
+            Some("main")
+        );
         assert_eq!(
             validated_timeline_origin(Some("main-window")).unwrap(),
             Some("main-window")
@@ -2791,8 +2799,10 @@ fn mark_onboarding_completed(onboarding: &mut OnboardingStore) -> serde_json::Va
 
 fn onboarding_completion_failure(stage: &str, attempt_id: &str, error: &str) -> String {
     let lower = error.to_lowercase();
-    let code = if lower.contains("permission denied") || lower.contains("access is denied")
-        || lower.contains("operation not permitted") {
+    let code = if lower.contains("permission denied")
+        || lower.contains("access is denied")
+        || lower.contains("operation not permitted")
+    {
         "permission_denied"
     } else if lower.contains("no space left") || lower.contains("disk full") {
         "disk_full"
@@ -2814,6 +2824,35 @@ fn onboarding_completion_failure(stage: &str, attempt_id: &str, error: &str) -> 
 #[cfg(test)]
 mod onboarding_receipt_tests {
     use super::*;
+
+    #[test]
+    fn consumer_paywall_transition_is_unlocked_without_clearing_capture_intent() {
+        let state = crate::recording::test_recording_state(true);
+        let step =
+            normalize_trial_activation_step(TRIAL_ACTIVATION_PAYWALL_STEP.to_string(), false);
+
+        assert_eq!(step, TRIAL_ACTIVATION_UNLOCKED_STEP);
+        assert_eq!(
+            trial_activation_capture_transition(
+                false,
+                false,
+                &step,
+                Some(TRIAL_ACTIVATION_SUMMARY_STEP),
+            ),
+            TrialActivationCaptureTransition::None
+        );
+        assert!(state.capture_intended());
+    }
+
+    #[test]
+    fn enterprise_paywall_transition_retains_upstream_capture_stop() {
+        let step = normalize_trial_activation_step(TRIAL_ACTIVATION_PAYWALL_STEP.to_string(), true);
+        assert_eq!(step, TRIAL_ACTIVATION_PAYWALL_STEP);
+        assert_eq!(
+            trial_activation_capture_transition(true, false, &step, None),
+            TrialActivationCaptureTransition::StopForPaywall
+        );
+    }
 
     #[test]
     fn retry_after_a_failed_save_preserves_completion_time_and_receipt_identity() {
@@ -3005,9 +3044,51 @@ pub async fn reset_onboarding(app_handle: tauri::AppHandle) -> Result<(), String
     Ok(())
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum TrialActivationCaptureTransition {
+    None,
+    StopForPaywall,
+    RestartAfterUnlock,
+}
+
+fn normalize_trial_activation_step(step: String, enterprise_trial_activation: bool) -> String {
+    // fork: consumer builds normalize every trial treatment transition to the
+    // durable unlocked sentinel; enterprise keeps the upstream state machine.
+    if !enterprise_trial_activation
+        && matches!(
+            step.as_str(),
+            TRIAL_ACTIVATION_SUMMARY_STEP | TRIAL_ACTIVATION_PAYWALL_STEP
+        )
+    {
+        TRIAL_ACTIVATION_UNLOCKED_STEP.to_string()
+    } else {
+        step
+    }
+}
+
+fn trial_activation_capture_transition(
+    enterprise_trial_activation: bool,
+    skip_onboarding: bool,
+    step: &str,
+    previous_step: Option<&str>,
+) -> TrialActivationCaptureTransition {
+    if enterprise_trial_activation && !skip_onboarding && step == TRIAL_ACTIVATION_PAYWALL_STEP {
+        TrialActivationCaptureTransition::StopForPaywall
+    } else if enterprise_trial_activation
+        && step == TRIAL_ACTIVATION_UNLOCKED_STEP
+        && previous_step == Some(TRIAL_ACTIVATION_PAYWALL_STEP)
+    {
+        TrialActivationCaptureTransition::RestartAfterUnlock
+    } else {
+        TrialActivationCaptureTransition::None
+    }
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn set_onboarding_step(app_handle: tauri::AppHandle, step: String) -> Result<(), String> {
+    let enterprise_trial_activation = is_enterprise_build(&app_handle);
+    let step = normalize_trial_activation_step(step, enterprise_trial_activation);
     let previous_step = OnboardingStore::get(&app_handle)
         .ok()
         .flatten()
@@ -3022,21 +3103,30 @@ pub async fn set_onboarding_step(app_handle: tauri::AppHandle, step: String) -> 
     })?;
     let _ = refresh_tray_menu(app_handle.clone()).await;
 
-    if !crate::should_skip_onboarding() && step == TRIAL_ACTIVATION_PAYWALL_STEP {
-        let state = app_handle.state::<crate::recording::RecordingState>();
-        crate::recording::stop_capture(state, app_handle.clone()).await?;
-        let _ = app_handle.emit("trial-activation-state", "paywall");
-    } else if step == TRIAL_ACTIVATION_UNLOCKED_STEP
-        && previous_step.as_deref() == Some(TRIAL_ACTIVATION_PAYWALL_STEP)
-    {
-        let _ = app_handle.emit("trial-activation-state", "trial-unlocked");
-        let recording_app = app_handle.clone();
-        tauri::async_runtime::spawn(async move {
-            let state = recording_app.state::<crate::recording::RecordingState>();
-            if let Err(error) = crate::spawn_screenpipe(state, recording_app.clone(), None).await {
-                warn!("failed to restart capture after trial activation: {error}");
-            }
-        });
+    match trial_activation_capture_transition(
+        enterprise_trial_activation,
+        crate::should_skip_onboarding(),
+        &step,
+        previous_step.as_deref(),
+    ) {
+        TrialActivationCaptureTransition::StopForPaywall => {
+            let state = app_handle.state::<crate::recording::RecordingState>();
+            crate::recording::stop_capture(state, app_handle.clone()).await?;
+            let _ = app_handle.emit("trial-activation-state", "paywall");
+        }
+        TrialActivationCaptureTransition::RestartAfterUnlock => {
+            let _ = app_handle.emit("trial-activation-state", "trial-unlocked");
+            let recording_app = app_handle.clone();
+            tauri::async_runtime::spawn(async move {
+                let state = recording_app.state::<crate::recording::RecordingState>();
+                if let Err(error) =
+                    crate::spawn_screenpipe(state, recording_app.clone(), None).await
+                {
+                    warn!("failed to restart capture after trial activation: {error}");
+                }
+            });
+        }
+        TrialActivationCaptureTransition::None => {}
     }
     Ok(())
 }
@@ -3440,9 +3530,7 @@ pub(crate) async fn maybe_show_shortcut_reminder_on_startup(
 
 #[tauri::command]
 #[specta::specta]
-pub async fn snooze_shortcut_reminder_for_hour(
-    app_handle: tauri::AppHandle,
-) -> Result<(), String> {
+pub async fn snooze_shortcut_reminder_for_hour(app_handle: tauri::AppHandle) -> Result<(), String> {
     let mut store = crate::store::SettingsStore::get(&app_handle)?.unwrap_or_default();
     let until = chrono::Utc::now()
         .timestamp()

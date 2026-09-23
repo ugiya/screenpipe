@@ -398,10 +398,10 @@ pub enum RestartSignal {
 }
 
 impl ResourceTelemetryReporter {
-    pub fn new(telemetry_enabled: bool) -> Arc<Self> {
-        // CI / automation always wins over the settings opt-in (see
-        // analytics::telemetry_disabled_by_env).
-        let telemetry_enabled = telemetry_enabled && !crate::analytics::telemetry_disabled_by_env();
+    pub fn new(_telemetry_enabled: bool) -> Arc<Self> {
+        // fork: the resource reporter owns a direct PostHog client, so disable
+        // it independently of the engine analytics atomic and stored setting.
+        let telemetry_enabled = false;
         let resource_log_file = if env::var("SAVE_RESOURCE_USAGE").is_ok() {
             let now = Local::now();
             let filename = format!("resource_usage_{}.json", now.format("%Y%m%d_%H%M%S"));
