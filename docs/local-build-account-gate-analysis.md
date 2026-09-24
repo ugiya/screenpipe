@@ -122,3 +122,63 @@ launch before the opt-out applies. Killing that needs a source edit — either s
 Disabling all of the above is safe: the local `/health` sampler and `last-panic.log` are written
 locally and do not depend on telemetry. Do **not** block the auth, AI-inference, or model-download
 hosts — those are real functionality.
+
+## v2.7.66 port (2026-09-24)
+
+Synced from v2.5.194 to release tag `app-v2.7.66` (1,300+ upstream commits). The v2.5.194 hunks
+were not replayed: the entitlement gate had been rewritten, and a clean textual apply would have
+missed new gates. The port re-implemented the same intent, then went through five independent
+review rounds, each of which found another layer. Commits: `834c7f745`, `fdf9550ba`, `8bf28dfbd`,
+`32f2fe070`.
+
+### What changed upstream
+
+- **Obsolete:** the free-plan forced 7-day `mode=all` retention clamp was removed upstream in
+  `79321df68` (app, engine and `POST /retention/configure`). Those old hunks were dropped.
+- **New gates the old patch never covered:** an explicit `LoggedOut` recording blocker and a
+  trial-activation paywall ahead of the plan policy; startup split into a server gate and a capture
+  gate; a paywall onboarding step that calls `stop_capture()` directly; mandatory onboarding login.
+- **New 24-hour history walls for free/unattributed users**, enforced independently in: the native
+  history policy (`recording.rs` `refresh_history_access_policy`), the timeline hook
+  (`lib/hooks/use-timeline-cache.tsx`), the Activity view (`components/activity-ledger.tsx`), and
+  native Activity read/generation (`src-tauri/src/activity_history.rs`). Engine routes enforce
+  whatever policy is injected, so they follow the native policy.
+- **New senders:** automatic remote support-log polling (`remote_support_logs.rs`), pipe-store
+  install-count POSTs, Workflows trajectory uploads, and the `screenpipe-mcp@latest` process
+  (separate npm package with its own Sentry client) launched or configured from six places.
+- **Fresh installs seeded `localRetentionEnabled=true`.**
+- **Bundle identity** changed to `screenpi.pe` in `acd070441`; the fork pins `screenpi.pe.dev`.
+
+### The fork decisions now in force
+
+| Area | Fork behaviour | Seam |
+|---|---|---|
+| Recording gate | consumer builds always allowed; enterprise unchanged | wrapper around the unchanged pure policy in `recording.rs` |
+| UI wall / onboarding | never walls or stops capture signed-out; login skippable; consumer trial paywall inert | `app-entitlement-gate.tsx`, `login-gate.tsx`, `onboarding-auth-restore.ts`, `commands.rs` transition executor, `store.rs` |
+| History | unrestricted for consumers everywhere listed above | shared `history_access` policy |
+| Telemetry | PostHog, Sentry, attribution, resource monitor, support logs, install counts, trajectory uploads all hard-off; every MCP launch/config forces `SCREENPIPE_DISABLE_TELEMETRY=1` and `SCREENPIPE_MCP_SENTRY_DISABLED=1` | per sender |
+| Retention | never auto-starts at launch (owner decision 2026-09-24); omitted `enabled` keeps state; UI shows runtime state; cutoff changes send only `retention_days` | early return in `sync.rs` `auto_start_retention` |
+| Paid features | **left as upstream** (pipe cap, hosted AI quota, team, cloud) | — |
+
+### Sync checklist for next time
+
+1. Grep every account-plan predicate (`is_free_or_unattributed_user`, `isFreeOrUnattributedUser`,
+   `set_last_24_hours`, `history_access`) and classify each call: local-history restriction (open
+   it), paid feature (leave), or unrelated. Five review rounds were spent finding these one by one.
+2. Grep every `screenpipe-mcp` launcher and config writer (Rust and TS) for the two env opt-outs.
+3. Grep for new outbound `fetch(` / `reqwest` / `/api/` senders.
+4. Confirm `tauri.conf.json` is still `screenpi.pe.dev` before building.
+5. Build a release tag, not the `main` tip.
+
+### Upstream bug found and fixed in the fork
+
+The storage conversion (optional, prompted at first launch) failed deterministically with
+`unterminated string` on databases whose first frame's text begins with NUL bytes. Fixed in
+`32f2fe070` (`crates/screenpipe-db/src/storage/lifecycle.rs`); worth filing upstream.
+
+### Known upstream test failures (not caused by the fork)
+
+`store::tests::new_store_marks_remote_control_preferences_as_inherited`,
+`health::tests::overlay_failure_details_are_brief_specific_and_privacy_safe`,
+`skills::tests::validate_repo_rejects_junk`; `disk_usage` and `updates::await_safe_restart` tests
+are flaky under parallel execution and pass serially.
