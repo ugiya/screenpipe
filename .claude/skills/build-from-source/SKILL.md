@@ -111,8 +111,26 @@ bun tauri build --no-sign          # NOT `bun run tauri:build`
 `scripts/build_macos.sh` (what `tauri:build` runs) hardcodes an upstream developer's signing
 identity that is not in this keychain. Always build unsigned and sign in step 4.
 
-Cold build is roughly 45-50 minutes. Run it in the background and poll. Output:
+Cold build is roughly 25-50 minutes. Run it in the background and poll. Output:
 `src-tauri/target/release/bundle/macos/screenpipe - Development.app`
+
+**Check the bundle identity before signing.** Upstream changed the base `tauri.conf.json` from
+`screenpi.pe.dev` / `screenpipe - Development` to `screenpi.pe` / `screenpipe` in `acd070441`
+(2026-09-16). The fork carries a two-line override back to the dev identity. After every sync:
+
+```bash
+grep -n '"identifier"\|productName' src-tauri/tauri.conf.json   # want screenpi.pe.dev
+APP="src-tauri/target/release/bundle/macos/screenpipe - Development.app"
+plutil -extract CFBundleIdentifier raw "$APP/Contents/Info.plist"   # after the build, same
+```
+
+If the bundle comes out as `screenpipe.app` / `screenpi.pe`, the DR gate in step 4 fails and every
+TCC grant would be lost. Some behavior does key off the identifier; an audit on 2026-09-24 found
+the URL scheme, keychain service (`com.screenpipe.app`), data dir, updater, single-instance and
+autostart all compatible with the dev identity. The dev identity also turns off remote
+announcements (`lib/announcements.ts` `isDevOrE2EAppIdentity`). Upstream's
+`scripts/build_macos.sh` hardcodes `screenpipe.app` and breaks with this name — another reason
+not to use it.
 
 A `cargo:warning` about `APPLE_SIGNING_IDENTITY missing` for `mlx.metallib` is expected — step 4
 signs it.
@@ -228,3 +246,6 @@ Keep the old bundle and the DB backup through a few days of soak before deleting
 | Fresh "Allow Screen Recording" prompt | DR changed (adhoc or wrong cert) | Re-sign with `Uri Gil Code Sign`, reinstall |
 | `open -b screenpi.pe.dev` hits the wrong copy | two bundles, same id | Remove the extra; `lsregister -kill -r -domain local -domain user` |
 | Recording never starts, log says account required | upstream entitlement gate | Sign in, or patch `recording_access_policy` |
+| Bundle is `screenpipe.app`, id `screenpi.pe` | upstream base identity changed (2026-09-16) | Keep the fork's `tauri.conf.json` override to `screenpi.pe.dev` |
+| Native tests panic in build.rs: `resource path bun-aarch64-apple-darwin doesn't exist` | sidecars not provisioned in a fresh worktree | `bun scripts/gen-skill-content.js && bun scripts/pre_build.js`, then `bun run test:tauri <filter>` |
+| Upstream `main` tip fails to compile | mid-flight upstream change | Build the newest `app-v*` release tag instead of the `main` tip |
