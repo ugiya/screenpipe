@@ -225,6 +225,68 @@ mod tests {
             db.close().await;
         }
     }
+
+    #[test]
+    fn migration_search_term_uses_searchable_words() {
+        assert_eq!(
+            migration_search_term("plain text"),
+            Some("\"plain\"".into())
+        );
+        assert_eq!(
+            migration_search_term("\u{0}\u{0}├───┼───── foo"),
+            Some("\"foo\"".into())
+        );
+        assert_eq!(migration_search_term("┃├───┼─────"), None);
+        assert_eq!(migration_search_term("\u{0345}\u{0345}\u{0345}"), None);
+        assert_eq!(migration_search_term("plainé"), None);
+        assert_eq!(
+            migration_search_term("hello\"world"),
+            Some("\"hello\"".into())
+        );
+        assert_eq!(migration_search_term(""), None);
+    }
+
+    #[tokio::test]
+    async fn migration_search_probes_skip_unsearchable_frame_text() {
+        let root = tempfile::tempdir().unwrap();
+        let db = DatabaseManager::new(
+            root.path().join("db.sqlite").to_str().unwrap(),
+            Default::default(),
+        )
+        .await
+        .unwrap();
+        let mut tx = db.begin_immediate_with_retry().await.unwrap();
+        sqlx::query("INSERT INTO frames(id,timestamp,full_text) VALUES(?,'2026-09-24',?)")
+            .bind(1_i64)
+            .bind("\u{0}\u{0}├───┼───── foo")
+            .execute(&mut **tx.conn())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO frames(id,timestamp,full_text) VALUES(?,'2026-09-24',?)")
+            .bind(2_i64)
+            .bind("┃")
+            .execute(&mut **tx.conn())
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let texts: Vec<String> = sqlx::query_scalar("SELECT full_text FROM frames WHERE full_text IS NOT NULL AND id IN ((SELECT min(id) FROM frames),(SELECT max(id) FROM frames))")
+            .fetch_all(&db.pool)
+            .await
+            .unwrap();
+        let terms: Vec<_> = texts
+            .iter()
+            .filter_map(|text| migration_search_term(text))
+            .collect();
+        assert_eq!(terms, ["\"foo\""]);
+        assert!(!terms[0].contains('\u{0}'));
+        let ids: Vec<i64> = sqlx::query_scalar(MIGRATION_SEARCH)
+            .bind(&terms[0])
+            .fetch_all(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(ids, [1]);
+        db.close().await;
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -761,8 +823,7 @@ async fn migrate_observed(
             let terms: Vec<String> = sqlx::query_scalar("SELECT full_text FROM frames WHERE full_text IS NOT NULL AND id IN ((SELECT min(id) FROM frames),(SELECT max(id) FROM frames))").fetch_all(&source.pool).await?;
             let mut searches = Vec::new();
             for text in terms {
-                if let Some(term) = text.split_whitespace().find(|t| t.len()>2) {
-                    let term = format!("\"{}\"",term.replace('"',"\"\""));
+                if let Some(term) = migration_search_term(&text) {
                     let ids = sqlx::query_scalar(MIGRATION_SEARCH).bind(&term).fetch_all(&source.pool).await?;
                     searches.push((term,ids));
                 }
@@ -1045,6 +1106,13 @@ async fn migrate_observed(
 }
 
 const MIGRATION_SEARCH: &str = "SELECT frames.id FROM frames JOIN frames_fts ON frames_fts.rowid=frames.id WHERE frames_fts MATCH ? ORDER BY frames.timestamp DESC,frames.id DESC LIMIT 32";
+
+fn migration_search_term(text: &str) -> Option<String> {
+    // fork: Probe ASCII words bounded by unicode61 separators; skip controls and diagrams.
+    text.split(|c: char| c.is_whitespace() || c.is_control() || c.is_ascii_punctuation())
+        .find(|term| term.len() > 2 && term.bytes().all(|c| c.is_ascii_alphanumeric()))
+        .map(|term| format!("\"{term}\""))
+}
 
 async fn resume_legacy_migration(
     root: &Path,
