@@ -5,7 +5,7 @@
 
 import { formatUiRelativeTime as formatRelativeTime } from "@/lib/i18n/format";
 
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useRef, useState, useCallback } from "react";
 import { useInterval } from "@/lib/hooks/use-interval";
 import { useSettings } from "@/lib/hooks/use-settings";
 import { RetentionModePreview } from "./setting-previews";
@@ -103,6 +103,7 @@ export function RetentionSettings({
   const { settings, updateSettings } = useSettings();
   const { toast } = useToast();
   const [status, setStatus] = useState<RetentionStatus | null>(null);
+  const statusRequestSequence = useRef(0);
   const [running, setRunning] = useState(false);
   const [pendingMode, setPendingMode] = useState<RetentionMode | null>(null);
   const [preview, setPreview] = useState<{
@@ -118,7 +119,9 @@ export function RetentionSettings({
     "the safety reserve",
   );
 
-  const enabled = settings.localRetentionEnabled ?? false;
+  // fork: startup can veto a saved retention policy, so only the engine's
+  // current status may say that automatic deletion is active this session.
+  const enabled = status?.enabled ?? false;
   const retentionDays = settings.localRetentionDays ?? 14;
   const mode: RetentionMode =
     (settings.localRetentionMode as RetentionMode | undefined) ?? "media";
@@ -134,10 +137,14 @@ export function RetentionSettings({
     availableBytes >= compactRequiredBytes;
 
   const fetchStatus = useCallback(async () => {
+    const requestSequence = ++statusRequestSequence.current;
     try {
       const res = await localFetch("/retention/status");
       if (res.ok) {
-        setStatus(await res.json());
+        const nextStatus = await res.json();
+        if (requestSequence === statusRequestSequence.current) {
+          setStatus(nextStatus);
+        }
       }
     } catch {
       // server not ready yet
@@ -195,11 +202,12 @@ export function RetentionSettings({
   }, [pendingMode, retentionDays]);
 
   const applyConfig = async (next: {
-    enabled: boolean;
+    enabled?: boolean;
     mode?: RetentionMode;
     retention_days?: number;
   }) => {
-    const body: Record<string, unknown> = { enabled: next.enabled };
+    const body: Record<string, unknown> = {};
+    if (next.enabled !== undefined) body.enabled = next.enabled;
     if (next.mode !== undefined) body.mode = next.mode;
     if (next.retention_days !== undefined)
       body.retention_days = next.retention_days;
@@ -212,6 +220,16 @@ export function RetentionSettings({
       const err = await res.json().catch(() => ({}));
       throw new Error(err.error || `request failed (${res.status})`);
     }
+    const configured = await res.json();
+    ++statusRequestSequence.current;
+    setStatus((current) => ({
+      enabled: configured.enabled,
+      retention_days: configured.retention_days,
+      mode: configured.mode,
+      last_cleanup: current?.last_cleanup ?? null,
+      last_error: current?.last_error ?? null,
+      total_deleted: current?.total_deleted ?? 0,
+    }));
   };
 
   const handleSelectMode = async (next: EffectiveMode) => {
@@ -221,7 +239,6 @@ export function RetentionSettings({
         await applyConfig({ enabled: false });
         await updateSettings({ localRetentionEnabled: false });
         toast({ title: ui("Auto-delete disabled") });
-        fetchStatus();
       } catch (e: any) {
         toast({
           title: ui("Failed to disable auto-delete"),
@@ -257,7 +274,6 @@ export function RetentionSettings({
               ? ui("Lean cleanup enabled ({value1}d)", { value1: retentionDays })
               : ui("Auto-delete enabled ({value1}d)", { value1: retentionDays }),
       });
-      fetchStatus();
     } catch (e: any) {
       toast({
         title: ui("Failed to update retention"),
@@ -272,7 +288,7 @@ export function RetentionSettings({
     await updateSettings({ localRetentionDays: days });
     if (enabled) {
       try {
-        await applyConfig({ enabled: true, retention_days: days });
+        await applyConfig({ retention_days: days });
       } catch {
         // non-critical
       }

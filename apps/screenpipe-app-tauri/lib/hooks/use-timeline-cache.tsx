@@ -14,7 +14,7 @@ import {
 } from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
 import { commands } from "@/lib/utils/tauri";
-import { isFreeOrUnattributedUser, type AppUser } from "@/lib/app-entitlement";
+import type { AppUser } from "@/lib/app-entitlement";
 
 const CACHE_FILENAME = "timeline_cache.json";
 const MAX_CACHED_FRAMES = 200; // Keep last 200 frames for instant load
@@ -40,15 +40,29 @@ export function filterTimelineFramesForHistoryAccess(
 }
 
 export function shouldRestrictTimelineHistory(
-  user: AppUser | null | undefined,
-  isEnterpriseBuild: boolean,
+  _user: AppUser | null | undefined,
+  _isEnterpriseBuild: boolean,
 ): boolean {
-  return !isEnterpriseBuild && isFreeOrUnattributedUser(user);
+  // fork: consumer history is unrestricted; enterprise authorization remains
+  // authoritative in the native policy queried below.
+  return false;
 }
 
 export function useAuthoritativeTimelineHistoryAccess(
   locallyRestricted: boolean,
+  isConsumerBuild: boolean,
 ): boolean {
+  // Timeline remains fail-closed until native policy resolves.
+  return useAuthoritativeTimelineHistoryAccessStatus(
+    locallyRestricted,
+    isConsumerBuild,
+  ) !== false;
+}
+
+export function useAuthoritativeTimelineHistoryAccessStatus(
+  locallyRestricted: boolean,
+  isConsumerBuild: boolean,
+): boolean | null {
   const [backendRestricted, setBackendRestricted] = useState<boolean | null>(null);
 
   useEffect(() => {
@@ -67,7 +81,11 @@ export function useAuthoritativeTimelineHistoryAccess(
     };
   }, [locallyRestricted]);
 
-  return locallyRestricted || backendRestricted !== false;
+  // fork: preserve loading separately so Activity does not persist a restricted
+  // range before enterprise authorization has resolved.
+  return isConsumerBuild
+    ? false
+    : locallyRestricted || backendRestricted;
 }
 
 // --- screenpipe data dir resolution ---

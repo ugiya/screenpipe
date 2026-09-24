@@ -32,6 +32,35 @@ async fn request(router: &axum::Router, path: &str, token: Option<&str>) -> (Sta
     )
 }
 
+async fn post_json(
+    router: &axum::Router,
+    path: &str,
+    token: &str,
+    body: Value,
+) -> (StatusCode, Value) {
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(path)
+                .header("Authorization", format!("Bearer {token}"))
+                .header("Content-Type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), 4 * 1024 * 1024)
+        .await
+        .unwrap();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+
 #[tokio::test]
 async fn workflow_catalog_api_reads_desktop_store_and_enforces_access() {
     check_workflow_catalog(false).await;
@@ -269,6 +298,23 @@ async fn check_workflow_catalog(migrate_to_parquet: bool) {
         .await
         .unwrap();
     publication_outage_preserves_a_retryable_draft(&router, &catalog_path).await;
+    // fork: consumers restore the shared policy to unrestricted, so the real
+    // authenticated maintenance endpoint must accept their local catalog.
+    // Keep this after the upstream catalog sequence: the POST populates route
+    // state that would otherwise mask the corrupt-catalog 503 assertion above.
+    let (maintenance_status, _) = post_json(
+        &router,
+        "/workflows/corrections",
+        "workflow-test-key",
+        json!({
+            "id": workflow_id(&workflow),
+            "correction": "Consumer maintenance remains available",
+            "expected_revision": null,
+            "changes": null
+        }),
+    )
+    .await;
+    assert_eq!(maintenance_status, StatusCode::OK);
 }
 
 async fn publication_outage_preserves_a_retryable_draft(

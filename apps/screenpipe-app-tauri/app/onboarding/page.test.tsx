@@ -336,6 +336,7 @@ describe("enterprise onboarding authentication", () => {
     expect(screen.queryByText("plan selection")).not.toBeInTheDocument();
   });
 
+  // fork: consumer onboarding never enters hosted checkout or the removed plan controller.
   it.skip("restores the plan controller after hosted checkout returns", async () => {
     window.history.replaceState({}, "", "/onboarding?checkout=complete");
     mocks.enterprisePolicy.isManagedDeployment = false;
@@ -354,6 +355,7 @@ describe("enterprise onboarding authentication", () => {
     );
   });
 
+  // fork: the consumer summary paywall and its completed-checkout return are unreachable.
   it.skip("returns a completed summary checkout to Home and unlocks the app", async () => {
     window.history.replaceState({}, "", "/onboarding?checkout=complete");
     mocks.enterprisePolicy.isManagedDeployment = false;
@@ -380,6 +382,7 @@ describe("enterprise onboarding authentication", () => {
     expect(mocks.routerReplace).toHaveBeenCalledWith("/home");
   });
 
+  // fork: the consumer summary paywall and its cancelled-checkout return are unreachable.
   it.skip("returns a cancelled summary checkout to the locked summary", async () => {
     window.history.replaceState({}, "", "/onboarding?checkout=cancelled");
     window.sessionStorage.setItem(
@@ -543,6 +546,7 @@ describe("enterprise onboarding authentication", () => {
     );
   });
 
+  // fork: consumer trial assignment and its checkout route are disabled before flag resolution.
   it.skip("does not expose the control checkout before the authenticated flag resolves", async () => {
     mocks.enterprisePolicy.isManagedDeployment = false;
     mocks.trialActivationVariant = "summary_first";
@@ -600,6 +604,7 @@ describe("enterprise onboarding authentication", () => {
     expect(screen.queryByText("plan selection")).not.toBeInTheDocument();
   });
 
+  // fork: consumer trial assignment never loads a remote flag or selects a checkout control arm.
   it.skip("falls back explicitly to control when authenticated flag loading fails", async () => {
     mocks.enterprisePolicy.isManagedDeployment = false;
     mocks.featureFlagsError = true;
@@ -623,6 +628,7 @@ describe("enterprise onboarding authentication", () => {
     expect(await screen.findByText("plan selection")).toBeInTheDocument();
   });
 
+  // fork: consumer trial assignment no longer requests the disabled experiment flag.
   it.skip("continues immediately when fresh authenticated flags omit the disabled experiment", async () => {
     mocks.enterprisePolicy.isManagedDeployment = false;
     mocks.trialActivationVariant = undefined;
@@ -650,6 +656,7 @@ describe("enterprise onboarding authentication", () => {
       .toBe("control");
   });
 
+  // fork: consumer trial assignment cannot temporarily replace or unmount the login gate.
   it.skip("records a fresh login once when assignment temporarily unmounts the real login gate", async () => {
     HTMLCanvasElement.prototype.getContext = vi.fn(() => null) as any;
     mocks.useRealLoginGate = true;
@@ -712,6 +719,7 @@ describe("enterprise onboarding authentication", () => {
       .toHaveLength(1);
   });
 
+  // fork: consumer trial routes are neither assigned nor restored after removed checkout navigation.
   it.skip("restores the pinned route instead of reassigning after checkout navigation", async () => {
     mocks.enterprisePolicy.isManagedDeployment = false;
     mocks.trialActivationVariant = "summary_first";
@@ -738,6 +746,7 @@ describe("enterprise onboarding authentication", () => {
     expect(mocks.reloadFeatureFlags).not.toHaveBeenCalled();
   });
 
+  // fork: consumer fresh installs cannot be assigned the disabled summary treatment.
   it.skip("assigns a fresh-install treatment user regardless of a missing plan", async () => {
     mocks.enterprisePolicy.isManagedDeployment = false;
     mocks.trialActivationVariant = "summary_first";
@@ -782,6 +791,7 @@ describe("enterprise onboarding authentication", () => {
     });
   });
 
+  // fork: consumer completion no longer writes the removed trial summary step.
   it.skip("retries a transient summary-step write before completing onboarding", async () => {
     mocks.enterprisePolicy.isManagedDeployment = false;
     mocks.trialActivationVariant = "summary_first";
@@ -805,6 +815,7 @@ describe("enterprise onboarding authentication", () => {
     });
   });
 
+  // fork: the removed trial summary-step write has no automatic retry or click-lock path.
   it.skip("releases the final-step click lock when both automatic attempts fail", async () => {
     mocks.enterprisePolicy.isManagedDeployment = false;
     mocks.trialActivationVariant = "summary_first";
@@ -833,11 +844,10 @@ describe("enterprise onboarding authentication", () => {
     await waitFor(() => expect(mocks.completeOnboarding).toHaveBeenCalled());
   });
 
-  it.skip("keeps real setup selections and completed tasks through pending native completion, failure and retry", async () => {
+  it("keeps real setup selections and completed tasks through pending native completion, failure and retry", async () => {
     mocks.useRealSetupCompletion = true;
     mocks.enterprisePolicy.isManagedDeployment = false;
     mocks.settings.user = { token: "qa-token", has_payment_method: false, entitlement_source: "none" };
-    window.sessionStorage.setItem(TRIAL_ACTIVATION_ASSIGNMENT_SESSION_KEY, "summary_first");
     const { useOnboarding } = await vi.importActual<typeof import("@/lib/hooks/use-onboarding")>("@/lib/hooks/use-onboarding");
     const data = { isCompleted: false, completedAt: null, currentStep: "recommended-setup", trialActivationFreshInstall: true };
     useOnboarding.setState({ onboardingData: data, isLoading: true, error: null });
@@ -867,32 +877,34 @@ describe("enterprise onboarding authentication", () => {
     const closeWindow = vi.spyOn(window, "close").mockImplementation(() => {});
     try {
       render(<OnboardingPage />);
-      const form = await screen.findByTestId("onboarding-final-setup");
+      await screen.findByTestId("onboarding-final-setup");
       const learning = screen.getByRole("switch", { name: /Improve my skills/ });
       fireEvent.click(learning);
       await waitFor(() => expect(screen.getByRole("button", { name: "Start Screenpipe" })).toBeEnabled());
       fireEvent.click(screen.getByRole("button", { name: "Start Screenpipe" }));
-      await waitFor(() => expect(mocks.nativeCompleteOnboarding).toHaveBeenCalledTimes(1));
-
-      expect(useOnboarding.getState().isLoading).toBe(true);
-      expect(screen.getByTestId("onboarding-final-setup")).toBe(form);
+      expect(await screen.findByRole("button", { name: /Find something/ })).toBeEnabled();
+      expect(screen.queryByTestId("onboarding-final-setup")).not.toBeInTheDocument();
       expect(learning).toHaveAttribute("data-state", "unchecked");
-      expect(learning).toBeDisabled();
-      expect(screen.getByRole("button", { name: "Setting up" })).toBeDisabled();
-      expect(tasks.get("digital-clone")).toBe(originalClone);
-
-      await act(async () => finishNative({ status: "error", error: JSON.stringify({ stage: "persist", error_code: "permission_denied", attempt_id: "00000000-0000-4000-8000-000000000001" }) }));
-      expect(await screen.findByRole("alert")).toHaveTextContent("Screenpipe couldn't finish setup. Completed tasks are saved. Try again.");
-      expect(screen.getByRole("alert")).not.toHaveTextContent("Your setup is saved");
-      expect(screen.getByTestId("onboarding-final-setup")).toBe(form);
-      expect(learning).toHaveAttribute("data-state", "unchecked");
-      expect(learning).toBeEnabled();
       expect(tasks.get("digital-clone")).toBe(originalClone);
       expect(tasks.has("skill-learning")).toBe(false);
       const completedWrites = fetch.mock.calls.filter(([, init]) => init?.method === "POST").length;
 
+      fireEvent.click(screen.getByRole("button", { name: /Find something/ }));
+      await waitFor(() => expect(mocks.nativeCompleteOnboarding).toHaveBeenCalledTimes(1));
+
+      expect(useOnboarding.getState().isLoading).toBe(true);
+      expect(screen.getByRole("button", { name: /Find something/ })).toBeDisabled();
+      expect(fetch.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(completedWrites);
+
+      await act(async () => finishNative({ status: "error", error: JSON.stringify({ stage: "persist", error_code: "permission_denied", attempt_id: "00000000-0000-4000-8000-000000000001" }) }));
+      expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't save your choice. Please try again.");
+      expect(screen.getByRole("button", { name: /Find something/ })).toBeEnabled();
+      expect(tasks.get("digital-clone")).toBe(originalClone);
+      expect(tasks.has("skill-learning")).toBe(false);
+      expect(fetch.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(completedWrites);
+
       mocks.nativeCompleteOnboarding.mockResolvedValueOnce({ status: "ok", data: null });
-      fireEvent.click(screen.getByRole("button", { name: "Retry setup" }));
+      fireEvent.click(screen.getByRole("button", { name: /Find something/ }));
       await waitFor(() => expect(useOnboarding.getState().onboardingData.isCompleted).toBe(true));
       expect(mocks.nativeCompleteOnboarding).toHaveBeenCalledTimes(2);
       expect(fetch.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(completedWrites);
@@ -1361,8 +1373,7 @@ describe("enterprise onboarding authentication", () => {
     consoleError.mockRestore();
   });
 
-  // fork: consumer trial assignment is disabled, so its PostHog transport is
-  // intentionally unreachable in this build.
+  // fork: consumer trial assignment is disabled, so all PostHog assignment transport cases are unreachable.
   describe.skip("real PostHog assignment transport", () => {
     type FlagRequest = {
       data: { distinct_id?: string };

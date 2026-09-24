@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => ({
   generateActivityHistory: vi.fn(),
   getAppServerBaseUrl: vi.fn(),
   getActivityHistory: vi.fn(),
+  isHistoryAccessRestricted: vi.fn(),
   loadPersistedActivityHistory: vi.fn(),
   localFetch: vi.fn(),
   posthogCapture: vi.fn(),
@@ -32,6 +33,11 @@ const mocks = vi.hoisted(() => ({
   setPendingNavigation: vi.fn(),
   showChatWithPrefill: vi.fn(),
   updateSettings: vi.fn(),
+  enterpriseBuild: {
+    isEnterprise: false,
+    resolved: true,
+    error: false,
+  },
   settings: {
     activitiesEnabled: true,
     enhancedAI: true,
@@ -101,6 +107,7 @@ vi.mock("@/lib/utils/tauri", async (importOriginal) => {
       ...actual.commands,
       generateActivityHistory: mocks.generateActivityHistory,
       getActivityHistory: mocks.getActivityHistory,
+      isHistoryAccessRestricted: mocks.isHistoryAccessRestricted,
     },
   };
 });
@@ -129,11 +136,7 @@ vi.mock("@/lib/hooks/use-settings", () => ({
   }),
 }));
 vi.mock("@/lib/hooks/use-is-enterprise-build", () => ({
-  useEnterpriseBuildStatus: () => ({
-    isEnterprise: false,
-    resolved: true,
-    error: false,
-  }),
+  useEnterpriseBuildStatus: () => mocks.enterpriseBuild,
 }));
 vi.mock("@/lib/hooks/use-timeline-store", () => ({
   useTimelineStore: (selector: (state: unknown) => unknown) =>
@@ -347,6 +350,10 @@ beforeEach(() => {
   mocks.eventListeners.clear();
   mocks.settings.enhancedAI = true;
   mocks.settings.activitiesEnabled = true;
+  mocks.enterpriseBuild.isEnterprise = false;
+  mocks.enterpriseBuild.resolved = true;
+  mocks.enterpriseBuild.error = false;
+  mocks.isHistoryAccessRestricted.mockResolvedValue(false);
   delete (mocks.settings as { activitiesAiPresetId?: string })
     .activitiesAiPresetId;
   mocks.updateSettings.mockImplementation(async (update: object) => {
@@ -499,52 +506,25 @@ describe("activity history helpers", () => {
     expect(range!.end.getTime() - range!.start.getTime()).toBe(86_400_000);
   });
 
-  it("limits free and unattributed activity ranges while preserving paid ranges", () => {
+  it("applies only the authoritative history restriction to activity ranges", () => {
     const now = new Date("2026-08-24T12:00:00.000Z");
     const requested = {
       start: new Date("2026-08-17T12:00:00.000Z"),
       end: new Date("2026-08-25T12:00:00.000Z"),
     };
 
-    expect(effectiveActivityRange(requested, null, now)).toEqual({
+    expect(effectiveActivityRange(requested, true, now)).toEqual({
       start: new Date("2026-08-23T12:00:00.000Z"),
       end: now,
     });
-    expect(
-      effectiveActivityRange(requested, mocks.settings.user as any, now),
-    ).toBe(requested);
-    expect(
-      effectiveActivityRange(
-        requested,
-        {
-          id: "enterprise-user",
-          subscription_plan: "enterprise",
-          app_entitled: true,
-          entitlement: {
-            active: true,
-            plan: "enterprise",
-            checked_at: "2026-08-17T19:00:00.000Z",
-            features: { app: true },
-          },
-          enterprise_account: {
-            org_name: "Acme",
-            role: "member",
-            requires_enterprise_app: true,
-          },
-        } as any,
-        now,
-      ),
-    ).toBe(requested);
-    expect(effectiveActivityRange(requested, null, now, true)).toBe(
-      requested,
-    );
+    expect(effectiveActivityRange(requested, false, now)).toBe(requested);
     expect(
       effectiveActivityRange(
         {
           start: new Date("2026-08-17T12:00:00.000Z"),
           end: new Date("2026-08-20T12:00:00.000Z"),
         },
-        undefined,
+        true,
         now,
       ),
     ).toBeNull();
@@ -1605,7 +1585,7 @@ describe("ActivityLedger", () => {
     expect(screen.getByLabelText("AI preset")).toBeVisible();
   });
 
-  it("coerces a restricted persisted 7-day range to 24 hours", async () => {
+  it("keeps a signed-out 7-day range and requests every activity source", async () => {
     const originalUser = mocks.settings.user;
     (mocks.settings as any).user = null;
     window.localStorage.setItem("screenpipe:activity-history:range", "7d");
@@ -1614,7 +1594,7 @@ describe("ActivityLedger", () => {
       render(<ActivityLedger />);
 
       const timeRange = await screen.findByRole("combobox", {
-        name: "Time range: Last 24 hours",
+        name: "Time range: Last 7 days",
       });
       fireEvent.click(timeRange);
 
@@ -1625,17 +1605,80 @@ describe("ActivityLedger", () => {
         screen.getByRole("option", { name: "Last 24 hours" }),
       ).toBeVisible();
       expect(
-        screen.queryByRole("option", { name: "Last 7 days" }),
-      ).toBeNull();
+        screen.getByRole("option", { name: "Last 7 days" }),
+      ).toBeVisible();
       expect(
-        screen.queryByRole("option", { name: "Custom range" }),
-      ).toBeNull();
+        screen.getByRole("option", { name: "Custom range" }),
+      ).toBeVisible();
       expect(window.localStorage.getItem("screenpipe:activity-history:range")).toBe(
-        "24h",
+        "7d",
+      );
+
+      const rangeStart = "2026-08-10T20:00:00.000Z";
+      const rangeEnd = "2026-08-17T20:00:00.000Z";
+      await waitFor(() =>
+        expect(mocks.getActivityHistory).toHaveBeenCalledWith(
+          rangeStart,
+          rangeEnd,
+        ),
+      );
+
+      const requestedUrls = mocks.localFetch.mock.calls.map(
+        ([path]) => new URL(path as string, "http://localhost"),
+      );
+      const requestFor = (pathname: string) =>
+        requestedUrls.find((url) => url.pathname === pathname);
+      expect(requestFor("/activity-ledger")?.searchParams.get("start_time")).toBe(
+        rangeStart,
+      );
+      expect(requestFor("/activity-summary")?.searchParams.get("start_time")).toBe(
+        rangeStart,
+      );
+      expect(requestFor("/meetings")?.searchParams.get("start_time")).toBe(
+        "2026-08-09T20:00:00.000Z",
       );
     } finally {
       mocks.settings.user = originalUser;
     }
+  });
+
+  it("keeps the native history restriction authoritative for enterprise builds", async () => {
+    mocks.enterpriseBuild.isEnterprise = true;
+    mocks.isHistoryAccessRestricted.mockResolvedValue(true);
+    window.localStorage.setItem("screenpipe:activity-history:range", "7d");
+
+    render(<ActivityLedger />);
+
+    expect(
+      await screen.findByRole("combobox", {
+        name: "Time range: Last 24 hours",
+      }),
+    ).toBeVisible();
+    expect(window.localStorage.getItem("screenpipe:activity-history:range")).toBe(
+      "24h",
+    );
+  });
+
+  it.each([
+    ["7d", "Last 7 days"],
+    ["custom", "Custom range"],
+  ])("preserves enterprise %s while native policy resolves unrestricted", async (preset, label) => {
+    mocks.enterpriseBuild.isEnterprise = true;
+    let resolvePolicy!: (restricted: boolean) => void;
+    mocks.isHistoryAccessRestricted.mockReturnValueOnce(
+      new Promise<boolean>((resolve) => { resolvePolicy = resolve; }),
+    );
+    window.localStorage.setItem("screenpipe:activity-history:range", preset);
+    window.localStorage.setItem("screenpipe:activity-history:custom-start", "2026-08-10T12:00");
+    window.localStorage.setItem("screenpipe:activity-history:custom-end", "2026-08-17T12:00");
+
+    render(<ActivityLedger />);
+    expect(await screen.findByRole("combobox", { name: `Time range: ${label}` })).toBeVisible();
+    expect(window.localStorage.getItem("screenpipe:activity-history:range")).toBe(preset);
+
+    await act(async () => { resolvePolicy(false); });
+    expect(screen.getByRole("combobox", { name: `Time range: ${label}` })).toBeVisible();
+    expect(window.localStorage.getItem("screenpipe:activity-history:range")).toBe(preset);
   });
 
   it("uses one popover trigger instead of two native custom-date inputs", async () => {

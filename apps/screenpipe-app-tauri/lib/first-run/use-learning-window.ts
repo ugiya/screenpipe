@@ -28,7 +28,10 @@ import {
   type FirstRunLearningState,
 } from "@/lib/first-run/learning-window";
 import { fetchRecentActivity } from "@/lib/first-run/recent-activity";
+import { useEnterpriseBuildStatus } from "@/lib/hooks/use-is-enterprise-build";
 import {
+  TRIAL_ACTIVATION_PAYWALL_STEP,
+  trialActivationState,
   type TrialActivationState,
 } from "@/lib/first-run/trial-activation";
 
@@ -53,6 +56,7 @@ export type LearningWindowOptions = {
 export function useLearningWindow(
   _options: LearningWindowOptions = {},
 ): LearningWindowView {
+  const enterpriseBuild = useEnterpriseBuildStatus();
   const [state, setState] = useState<FirstRunLearningState>(() => {
     const stored = readLearningWindow();
     // A ready card is a one-session announcement, not a replacement for the
@@ -74,9 +78,13 @@ export function useLearningWindow(
       const result = await commands.getOnboardingStatus();
       if (cancelled || result.status !== "ok" || !result.data.isCompleted) return;
       const native = result.data;
-      // fork: persisted consumer trial/paywall state is never allowed to lock
-      // the UI, regardless of the native route stored by an earlier build.
-      setActivationState("inactive");
+      // fork: persisted consumer trial/paywall state must never lock the UI.
+      // Enterprise builds retain the upstream rollout and transition behavior.
+      setActivationState(
+        enterpriseBuild.resolved && enterpriseBuild.isEnterprise
+          ? trialActivationState(native.currentStep)
+          : "inactive",
+      );
       const startedAt = native.firstRunSummaryStartedAt ?? native.completedAt;
       const phase = native.firstRunSummaryPhase ?? "idle";
 
@@ -119,7 +127,7 @@ export function useLearningWindow(
       clearInterval(timer);
       void unlisten.then((off) => off()).catch(() => {});
     };
-  }, []);
+  }, [enterpriseBuild.isEnterprise, enterpriseBuild.resolved]);
 
   useEffect(() => {
     if (!state.startedAt || (state.phase !== "learning" && state.phase !== "writing")) return;
@@ -156,8 +164,22 @@ export function useLearningWindow(
   const markSummaryOpened = useCallback(() => setState(markLearningSummaryOpened()), []);
   const markSummaryRendered = useCallback(async () => {
     // fork: rendering a first-run summary must never enter the consumer
-    // paywall state or lock application surfaces.
-  }, []);
+    // paywall state or lock application surfaces. Enterprise keeps upstream.
+    if (
+      !enterpriseBuild.resolved ||
+      !enterpriseBuild.isEnterprise ||
+      activationState !== "summary"
+    ) {
+      return;
+    }
+    await commands.setOnboardingStep(TRIAL_ACTIVATION_PAYWALL_STEP);
+    posthog.capture("first_run_summary_rendered", {
+      experiment: "first-summary-card-trial-v1",
+      variant: "summary_first",
+      eligible_new_install: true,
+    });
+    setActivationState("paywall");
+  }, [activationState, enterpriseBuild.isEnterprise, enterpriseBuild.resolved]);
   // Notification persistence is native; retained for the existing view contract.
   const markNotificationSent = useCallback(() => {}, []);
   const markReadyShown = useCallback(() => {

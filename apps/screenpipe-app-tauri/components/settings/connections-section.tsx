@@ -88,6 +88,11 @@ import { CursorLogo } from "./tool-logos";
 // ---------------------------------------------------------------------------
 
 const GITHUB_RELEASES_API = "https://api.github.com/repos/screenpipe/screenpipe/releases";
+// fork: copy-paste MCP configs must preserve the personal build's telemetry opt-out.
+const MCP_TELEMETRY_DISABLED_ENV = {
+  SCREENPIPE_DISABLE_TELEMETRY: "1",
+  SCREENPIPE_MCP_SENTRY_DISABLED: "1",
+};
 
 interface GitHubAsset { name: string; browser_download_url: string; }
 interface GitHubRelease { tag_name: string; assets: GitHubAsset[]; }
@@ -1325,7 +1330,7 @@ function CursorPanel({ onConnected, onDisconnected }: { onConnected?: () => void
       {connectError && <PanelConfigError err={connectError} />}
       <details className="text-xs text-muted-foreground">
         <summary className="cursor-pointer">Manual config</summary>
-        <pre className="mt-2 bg-muted border border-border rounded-lg p-3 text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap">{ui("add to ~/.cursor/mcp.json:\n\n{value1}", { value1: JSON.stringify({ mcpServers: { screenpipe: { command: "npx", args: ["-y", "screenpipe-mcp@latest"] } } }, null, 2) })}</pre>
+        <pre className="mt-2 bg-muted border border-border rounded-lg p-3 text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap">{ui("add to ~/.cursor/mcp.json:\n\n{value1}", { value1: JSON.stringify({ mcpServers: { screenpipe: { command: "npx", args: ["-y", "screenpipe-mcp@latest"], env: MCP_TELEMETRY_DISABLED_ENV } } }, null, 2) })}</pre>
       </details>
     </div>
   );
@@ -1347,6 +1352,7 @@ function CodexPanel({ onConnected, onDisconnected }: { onConnected?: () => void;
   const manualConfig = useMemo(() => buildCodexMcpToml({
     command: "npx",
     args: ["-y", "screenpipe-mcp@latest"],
+    env: MCP_TELEMETRY_DISABLED_ENV,
   }), []);
 
   const handleConnect = async () => {
@@ -1421,6 +1427,7 @@ function GrokPanel({ onConnected, onDisconnected }: { onConnected?: () => void; 
   const manualConfig = useMemo(() => buildGrokMcpJson({
     command: "npx",
     args: ["-y", "screenpipe-mcp@latest"],
+    env: MCP_TELEMETRY_DISABLED_ENV,
   }), []);
 
   const handleConnect = async () => {
@@ -1856,13 +1863,14 @@ function ObsidianMemorySyncSubsection() {
   );
 }
 
-function AnythingLLMPanel() {
+export function AnythingLLMPanel() {
   const [copied, setCopied] = useState(false);
   const config = JSON.stringify({
     mcpServers: {
       screenpipe: {
         command: "npx",
         args: ["-y", "screenpipe-mcp@latest"],
+        env: MCP_TELEMETRY_DISABLED_ENV,
       },
     },
   }, null, 2);
@@ -1903,6 +1911,7 @@ function MstyPanel() {
   const config = JSON.stringify({
     command: "npx",
     args: ["-y", "screenpipe-mcp@latest"],
+    env: MCP_TELEMETRY_DISABLED_ENV,
   }, null, 2);
   const handleCopy = useCallback(async () => {
     try {
@@ -1947,6 +1956,7 @@ function WarpPanel() {
     screenpipe: {
       command: "npx",
       args: ["-y", "screenpipe-mcp@latest"],
+      env: MCP_TELEMETRY_DISABLED_ENV,
       start_on_launch: true,
     },
   }, null, 2);

@@ -3147,6 +3147,13 @@ fn extension_mcp_env() -> Vec<(String, String)> {
     env
 }
 
+fn mcp_telemetry_env() -> Vec<EnvVariable> {
+    vec![
+        EnvVariable::new("SCREENPIPE_DISABLE_TELEMETRY", "1"),
+        EnvVariable::new("SCREENPIPE_MCP_SENTRY_DISABLED", "1"),
+    ]
+}
+
 fn mcp_servers(config: &RuntimeConfig) -> Vec<McpServer> {
     let mut servers: Vec<McpServer> = Vec::new();
 
@@ -3160,7 +3167,8 @@ fn mcp_servers(config: &RuntimeConfig) -> Vec<McpServer> {
         }
     } else {
         let mut args = vec!["x".into(), SCREENPIPE_MCP_PKG.into()];
-        let mut env = Vec::new();
+        // fork: app-managed MCP processes must never report telemetry.
+        let mut env = mcp_telemetry_env();
         if let Some(url) = engine_api_url() {
             args.extend(["--screenpipe-url".into(), url.clone()]);
             env.push(EnvVariable::new("SCREENPIPE_API_URL", url));
@@ -3344,15 +3352,7 @@ fn spawn_http_mcp_servers(config: &RuntimeConfig) -> Vec<std::process::Child> {
     // only that mode). Best-effort: `bun x` may fetch it on first run, so it can
     // lag; we still advertise it (the agent retries) rather than block on it.
     if let Some(port) = free_loopback_port() {
-        let mut cmd = crate::no_window_command(&config.bun_path);
-        cmd.arg("x")
-            .arg(SCREENPIPE_MCP_PKG)
-            .arg("--http")
-            .arg("--port")
-            .arg(port.to_string())
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::inherit());
+        let mut cmd = core_http_mcp_command(config, port);
         if let Some(engine_port) =
             env_nonempty("SCREENPIPE_LOCAL_API_PORT").or_else(|| env_nonempty("SCREENPIPE_PORT"))
         {
@@ -3387,6 +3387,22 @@ fn spawn_http_mcp_servers(config: &RuntimeConfig) -> Vec<std::process::Child> {
 
     let _ = HTTP_MCP_URLS.set(urls);
     children
+}
+
+fn core_http_mcp_command(config: &RuntimeConfig, port: u16) -> Command {
+    let mut cmd = crate::no_window_command(&config.bun_path);
+    cmd.arg("x")
+        .arg(SCREENPIPE_MCP_PKG)
+        .arg("--http")
+        .arg("--port")
+        .arg(port.to_string())
+        // fork: app-managed MCP processes must never report telemetry.
+        .env("SCREENPIPE_DISABLE_TELEMETRY", "1")
+        .env("SCREENPIPE_MCP_SENTRY_DISABLED", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit());
+    cmd
 }
 
 async fn create_session(
@@ -5503,6 +5519,49 @@ mod tests {
     #[test]
     fn screenpipe_mcp_uses_latest_published_package() {
         assert_eq!(SCREENPIPE_MCP_PKG, "screenpipe-mcp@latest");
+    }
+
+    #[test]
+    fn screenpipe_mcp_launches_disable_telemetry() {
+        let config = runtime_config("claude-acp");
+        let stdio = mcp_servers(&config)
+            .into_iter()
+            .find_map(|server| match server {
+                McpServer::Stdio(stdio) if stdio.name == "screenpipe" => Some(stdio),
+                _ => None,
+            })
+            .expect("screenpipe stdio server");
+        for name in [
+            "SCREENPIPE_DISABLE_TELEMETRY",
+            "SCREENPIPE_MCP_SENTRY_DISABLED",
+        ] {
+            assert!(stdio
+                .env
+                .iter()
+                .any(|variable| variable.name == name && variable.value == "1"));
+        }
+
+        let http = core_http_mcp_command(&config, 43123);
+        let env = http
+            .get_envs()
+            .filter_map(|(name, value)| {
+                value.map(|value| {
+                    (
+                        name.to_string_lossy().into_owned(),
+                        value.to_string_lossy().into_owned(),
+                    )
+                })
+            })
+            .collect::<HashMap<_, _>>();
+        assert_eq!(
+            env.get("SCREENPIPE_DISABLE_TELEMETRY").map(String::as_str),
+            Some("1")
+        );
+        assert_eq!(
+            env.get("SCREENPIPE_MCP_SENTRY_DISABLED")
+                .map(String::as_str),
+            Some("1")
+        );
     }
 
     #[test]

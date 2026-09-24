@@ -5956,14 +5956,22 @@ pub(crate) fn find_bun_executable() -> Option<String> {
 /// and the agent fell back to raw SQL. Best-effort and idempotent: once cached,
 /// `bun x` reuses it. Runs with stdin closed so the stdio server sees EOF and
 /// exits right after the download completes.
-fn prewarm_screenpipe_mcp(bun: &str) {
+fn prewarm_screenpipe_mcp_command(bun: &str) -> std::process::Command {
     use std::process::Stdio;
     let mut cmd = bun_command(bun);
     cmd.arg("x")
         .arg(screenpipe_core::agents::acp::SCREENPIPE_MCP_PKG)
+        // fork: app-managed MCP processes must never report telemetry.
+        .env("SCREENPIPE_DISABLE_TELEMETRY", "1")
+        .env("SCREENPIPE_MCP_SENTRY_DISABLED", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    cmd
+}
+
+fn prewarm_screenpipe_mcp(bun: &str) {
+    let mut cmd = prewarm_screenpipe_mcp_command(bun);
     match cmd.spawn() {
         Ok(mut child) => {
             // The cache is populated during `bun x` resolution, which precedes
@@ -6201,6 +6209,32 @@ mod tests {
     fn managed_pi_installs_disable_dependency_lifecycle_scripts() {
         assert!(super::PI_INSTALL_ARGS.contains(&"--ignore-scripts"));
         assert!(super::NPM_INSTALL_ARGS.contains(&"--ignore-scripts"));
+    }
+
+    #[test]
+    fn screenpipe_mcp_prewarm_disables_telemetry() {
+        let command = super::prewarm_screenpipe_mcp_command("bun");
+        let env = command
+            .get_envs()
+            .filter_map(|(name, value)| {
+                value.map(|value| {
+                    (
+                        name.to_string_lossy().into_owned(),
+                        value.to_string_lossy().into_owned(),
+                    )
+                })
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+
+        assert_eq!(
+            env.get("SCREENPIPE_DISABLE_TELEMETRY").map(String::as_str),
+            Some("1")
+        );
+        assert_eq!(
+            env.get("SCREENPIPE_MCP_SENTRY_DISABLED")
+                .map(String::as_str),
+            Some("1")
+        );
     }
 
     #[test]

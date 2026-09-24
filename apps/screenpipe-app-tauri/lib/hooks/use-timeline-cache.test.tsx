@@ -40,6 +40,7 @@ import {
   saveFramesToCache,
   shouldRestrictTimelineHistory,
   useAuthoritativeTimelineHistoryAccess,
+  useAuthoritativeTimelineHistoryAccessStatus,
 } from "./use-timeline-cache";
 import type { AppUser } from "@/lib/app-entitlement";
 import type { StreamTimeSeriesResponse } from "@/components/rewind/timeline";
@@ -145,33 +146,63 @@ describe("timeline cache history access", () => {
     ).toBe(frames);
   });
 
-  it("fails closed for unknown consumer accounts but never restricts enterprise builds", () => {
-    expect(shouldRestrictTimelineHistory(undefined, true)).toBe(false);
-    expect(shouldRestrictTimelineHistory(undefined, false)).toBe(true);
+  it("does not infer a history wall from consumer or enterprise account plans", () => {
+    expect(shouldRestrictTimelineHistory(undefined, false)).toBe(false);
     expect(shouldRestrictTimelineHistory(paidUser(nowMs), false)).toBe(false);
+    expect(shouldRestrictTimelineHistory(undefined, true)).toBe(false);
+    expect(shouldRestrictTimelineHistory(paidUser(nowMs), true)).toBe(false);
   });
 
-  it("uses the backend policy when a detached timeline window has no local restriction", async () => {
+  it("ignores a stale backend restriction for an authoritative consumer build", async () => {
     tauriCommands.isHistoryAccessRestricted.mockResolvedValueOnce(true);
 
     const { result } = renderHook(() =>
-      useAuthoritativeTimelineHistoryAccess(false),
+      useAuthoritativeTimelineHistoryAccess(false, true),
     );
 
     await act(async () => {
       await Promise.resolve();
     });
-    expect(result.current).toBe(true);
+    expect(result.current).toBe(false);
   });
 
-  it("keeps detached timeline history restricted while backend policy is loading", () => {
+  it("keeps enterprise timeline history restricted while backend policy is loading", () => {
     tauriCommands.isHistoryAccessRestricted.mockReturnValueOnce(new Promise(() => {}));
 
     const { result } = renderHook(() =>
-      useAuthoritativeTimelineHistoryAccess(false),
+      useAuthoritativeTimelineHistoryAccess(false, false),
     );
 
     expect(result.current).toBe(true);
+  });
+
+  it("reports enterprise policy as loading until native access resolves", async () => {
+    let resolvePolicy!: (restricted: boolean) => void;
+    tauriCommands.isHistoryAccessRestricted.mockReturnValueOnce(
+      new Promise<boolean>((resolve) => { resolvePolicy = resolve; }),
+    );
+
+    const { result } = renderHook(() =>
+      useAuthoritativeTimelineHistoryAccessStatus(false, false),
+    );
+    expect(result.current).toBeNull();
+
+    await act(async () => { resolvePolicy(false); });
+    expect(result.current).toBe(false);
+  });
+
+  it("loads cached frames older than 24 hours for a signed-out consumer", async () => {
+    fs.readTextFile.mockResolvedValue(
+      JSON.stringify({
+        frames: [recent, old],
+        date: new Date(nowMs).toISOString(),
+        timestamp: nowMs,
+      }),
+    );
+
+    await expect(loadCachedFrames(false)).resolves.toMatchObject({
+      frames: [recent, old],
+    });
   });
 
   it("does not persist old frame ids or file paths for restricted users", async () => {

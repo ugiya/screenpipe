@@ -20,6 +20,29 @@ struct GitHubContent {
     content_type: String,
 }
 
+fn mcp_setup_config(mcp_dir: &Path, port: u16) -> serde_json::Value {
+    json!({
+        "mcpServers": {
+            "screenpipe": {
+                "command": "uv",
+                "args": [
+                    "--directory",
+                    mcp_dir.to_string_lossy().to_string(),
+                    "run",
+                    "screenpipe-mcp",
+                    "--port",
+                    port.to_string()
+                ],
+                // fork: a generated MCP launcher must not report automatically.
+                "env": {
+                    "SCREENPIPE_DISABLE_TELEMETRY": "1",
+                    "SCREENPIPE_MCP_SENTRY_DISABLED": "1"
+                }
+            }
+        }
+    })
+}
+
 pub async fn handle_mcp_command(
     command: &McpCommand,
     local_data_dir: &std::path::Path,
@@ -104,24 +127,10 @@ pub async fn handle_mcp_command(
             };
 
             // Create config regardless of download status
-            let config = json!({
-                "mcpServers": {
-                    "screenpipe": {
-                        "command": "uv",
-                        "args": [
-                            "--directory",
-                            mcp_dir.to_string_lossy().to_string(),
-                            "run",
-                            "screenpipe-mcp",
-                            "--port",
-                            port.to_string()
-                        ]
-                    }
-                }
-            });
+            let config = mcp_setup_config(&mcp_dir, *port);
 
             let run_command = format!(
-                "uv --directory {} run screenpipe-mcp --port {}",
+                "SCREENPIPE_DISABLE_TELEMETRY=1 SCREENPIPE_MCP_SENTRY_DISABLED=1 uv --directory {} run screenpipe-mcp --port {}",
                 mcp_dir.to_string_lossy(),
                 port
             );
@@ -312,4 +321,19 @@ fn is_command_available(command: &str) -> bool {
     cmd.output()
         .map(|output| output.status.success())
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mcp_setup_config;
+    use std::path::Path;
+
+    #[test]
+    fn mcp_setup_config_disables_automatic_reporting() {
+        let config = mcp_setup_config(Path::new("/tmp/screenpipe-mcp"), 3030);
+        let launch = &config["mcpServers"]["screenpipe"];
+        assert_eq!(launch["args"][3], "screenpipe-mcp");
+        assert_eq!(launch["env"]["SCREENPIPE_DISABLE_TELEMETRY"], "1");
+        assert_eq!(launch["env"]["SCREENPIPE_MCP_SENTRY_DISABLED"], "1");
+    }
 }

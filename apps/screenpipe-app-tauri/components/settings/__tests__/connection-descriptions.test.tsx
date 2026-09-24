@@ -4,18 +4,25 @@
 
 import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
-import { ListRow, OAuthPanel } from "../connections-section";
+import { act, fireEvent, render, screen } from "@testing-library/react";
+import { AnythingLLMPanel, ListRow, OAuthPanel } from "../connections-section";
+import { RemoteAgentCard } from "../remote-agent-card";
 
 const mocks = vi.hoisted(() => ({
   oauthListInstances: vi.fn(),
   oauthStatus: vi.fn(),
+  copyTextToClipboard: vi.fn(),
 }));
 
 vi.mock("@/lib/utils/tauri", () => ({
   commands: {
     oauthListInstances: mocks.oauthListInstances,
     oauthStatus: mocks.oauthStatus,
+    copyTextToClipboard: mocks.copyTextToClipboard,
+    remoteSyncDiscoverHosts: vi.fn(async () => ({ status: "ok", data: [] })),
+    remoteSyncSchedulerStatus: vi.fn(async () => ({ status: "ok", data: null })),
+    remoteSyncStartScheduler: vi.fn(async () => ({ status: "ok", data: null })),
+    remoteSyncStopScheduler: vi.fn(async () => ({ status: "ok", data: null })),
   },
 }));
 vi.mock("posthog-js", () => ({ default: { capture: vi.fn() } }));
@@ -48,6 +55,51 @@ beforeEach(() => {
   mocks.oauthStatus.mockResolvedValue({
     status: "ok",
     data: { connected: false, display_name: null },
+  });
+  mocks.copyTextToClipboard.mockReset();
+});
+
+describe("manual MCP config privacy", () => {
+  it("copies both telemetry opt-outs in the AnythingLLM config", async () => {
+    render(<AnythingLLMPanel />);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button"));
+    });
+
+    const copied = mocks.copyTextToClipboard.mock.calls[0]?.[0] as string;
+    expect(copied).toContain('"SCREENPIPE_DISABLE_TELEMETRY": "1"');
+    expect(copied).toContain('"SCREENPIPE_MCP_SENTRY_DISABLED": "1"');
+  });
+
+  it("renders and copies both telemetry opt-outs in every remote config format", async () => {
+    render(<RemoteAgentCard />);
+
+    const assertRendered = () => {
+      expect(screen.getByText(/SCREENPIPE_DISABLE_TELEMETRY/)).toBeVisible();
+      expect(screen.getByText(/SCREENPIPE_MCP_SENTRY_DISABLED/)).toBeVisible();
+    };
+
+    assertRendered();
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("Copy"));
+    });
+    expect(mocks.copyTextToClipboard).toHaveBeenLastCalledWith(
+      expect.stringContaining('"SCREENPIPE_DISABLE_TELEMETRY": "1"'),
+    );
+    expect(mocks.copyTextToClipboard).toHaveBeenLastCalledWith(
+      expect.stringContaining('"SCREENPIPE_MCP_SENTRY_DISABLED": "1"'),
+    );
+
+    fireEvent.change(screen.getByRole("combobox"), {
+      target: { value: "hermes" },
+    });
+    assertRendered();
+
+    fireEvent.change(screen.getByRole("combobox"), {
+      target: { value: "codex" },
+    });
+    assertRendered();
   });
 });
 

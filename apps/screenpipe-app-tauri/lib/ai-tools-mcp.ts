@@ -145,6 +145,9 @@ export async function buildMcpConfig(opts?: {
   const apiKey = await resolveLocalApiKeyForMcp();
 
   const env: Record<string, string> = {
+    // fork: personal builds never let a generated MCP config report telemetry.
+    SCREENPIPE_DISABLE_TELEMETRY: "1",
+    SCREENPIPE_MCP_SENTRY_DISABLED: "1",
     SCREENPIPE_MCP_CLIENT: opts?.client ?? "unknown",
     ...(apiKey ? { SCREENPIPE_LOCAL_API_KEY: apiKey } : {}),
   };

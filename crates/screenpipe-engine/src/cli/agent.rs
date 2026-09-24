@@ -511,6 +511,11 @@ fn desktop_launch_config(
     let mut env = BTreeMap::from([
         ("SCREENPIPE_API_URL".to_string(), api_url.to_string()),
         ("SCREENPIPE_MCP_CLIENT".to_string(), agent.id.to_string()),
+        ("SCREENPIPE_DISABLE_TELEMETRY".to_string(), "1".to_string()),
+        (
+            "SCREENPIPE_MCP_SENTRY_DISABLED".to_string(),
+            "1".to_string(),
+        ),
     ]);
     if let Some(api_key) = api_key {
         env.insert("SCREENPIPE_LOCAL_API_KEY".to_string(), api_key.to_string());
@@ -1282,11 +1287,17 @@ fn remove_mcp_yaml(path: &Path) -> Result<()> {
 }
 
 fn cli_launch_config(remote: bool, api_url: &str) -> McpLaunchConfig {
-    let env = if remote {
-        BTreeMap::from([("SCREENPIPE_API_URL".to_string(), api_url.to_string())])
-    } else {
-        BTreeMap::new()
-    };
+    // fork: every generated screenpipe-mcp launch must disable telemetry.
+    let mut env = BTreeMap::from([
+        ("SCREENPIPE_DISABLE_TELEMETRY".to_string(), "1".to_string()),
+        (
+            "SCREENPIPE_MCP_SENTRY_DISABLED".to_string(),
+            "1".to_string(),
+        ),
+    ]);
+    if remote {
+        env.insert("SCREENPIPE_API_URL".to_string(), api_url.to_string());
+    }
     McpLaunchConfig {
         command: "npx".to_string(),
         args: vec!["-y".to_string(), "screenpipe-mcp@latest".to_string()],
@@ -1667,7 +1678,14 @@ mod tests {
         let v: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(v["mcpServers"]["screenpipe"]["command"], "npx");
-        assert!(v["mcpServers"]["screenpipe"]["env"].is_null());
+        assert_eq!(
+            v["mcpServers"]["screenpipe"]["env"]["SCREENPIPE_DISABLE_TELEMETRY"],
+            "1"
+        );
+        assert_eq!(
+            v["mcpServers"]["screenpipe"]["env"]["SCREENPIPE_MCP_SENTRY_DISABLED"],
+            "1"
+        );
 
         // Idempotent + preserves a pre-existing server.
         std::fs::write(
@@ -2414,6 +2432,8 @@ mod tests {
         )));
         assert!(codex.contains("SCREENPIPE_LOCAL_API_KEY = \"sp-test-key\""));
         assert!(codex.contains("SCREENPIPE_MCP_CLIENT = \"codex\""));
+        assert!(codex.contains("SCREENPIPE_DISABLE_TELEMETRY = \"1\""));
+        assert!(codex.contains("SCREENPIPE_MCP_SENTRY_DISABLED = \"1\""));
         assert!(codex.contains("SCREENPIPE_API_URL = \"http://localhost:31337\""));
         assert!(home.join(".codex/skills/screenpipe-api/SKILL.md").is_file());
         assert!(home.join(".codex/skills/screenpipe-cli/SKILL.md").is_file());

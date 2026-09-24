@@ -786,8 +786,7 @@ fn durable_flush_if_still_plaintext(store_path: &Path, plaintext: &[u8]) {
 
 /// Re-encrypt store.bin on disk. Called after the Tauri store plugin writes plain JSON.
 /// Also syncs the .encrypt-store flag file from the encryptStore setting.
-// fork: runtime-generic so the real initializer can be exercised with Tauri's isolated test runtime.
-pub fn reencrypt_store_file<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+pub fn reencrypt_store_file(app: &AppHandle) {
     if let Ok(base_dir) = get_base_dir(app, None) {
         reencrypt_store_at(&base_dir.join("store.bin"));
     }
@@ -815,10 +814,9 @@ fn save_store_to_disk<R: tauri::Runtime>(
     retry_windows_store_io(|| store.save()).map_err(|e| e.to_string())
 }
 
-// fork: preserve the production save path while allowing the real initializer to use MockRuntime.
-pub(crate) fn save_store_with_permission_repair<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    store: &tauri_plugin_store::Store<R>,
+pub(crate) fn save_store_with_permission_repair(
+    app: &AppHandle,
+    store: &tauri_plugin_store::Store<tauri::Wry>,
 ) -> Result<(), String> {
     match save_store_to_disk(store) {
         Ok(()) => Ok(()),
@@ -1124,32 +1122,6 @@ pub fn get_store(
     }
     *guard = Some(store.clone());
     Ok(store)
-}
-
-// fork: Wry keeps its process cache; tests open the same store boundary under MockRuntime.
-#[doc(hidden)]
-pub trait InitStoreRuntime: tauri::Runtime {
-    fn open_settings_store(
-        app: &tauri::AppHandle<Self>,
-    ) -> anyhow::Result<Arc<tauri_plugin_store::Store<Self>>>;
-}
-
-impl InitStoreRuntime for tauri::Wry {
-    fn open_settings_store(
-        app: &tauri::AppHandle<Self>,
-    ) -> anyhow::Result<Arc<tauri_plugin_store::Store<Self>>> {
-        get_store(app, None)
-    }
-}
-
-#[cfg(test)]
-impl InitStoreRuntime for tauri::test::MockRuntime {
-    fn open_settings_store(
-        app: &tauri::AppHandle<Self>,
-    ) -> anyhow::Result<Arc<tauri_plugin_store::Store<Self>>> {
-        let store_path = get_base_dir(app, None)?.join("store.bin");
-        build_store_at(app, store_path)
-    }
 }
 
 /// Invalidate the cached store so the next `get_store` call rebuilds it.
@@ -2255,10 +2227,8 @@ impl SettingsStore {
         obj.insert("provider".to_string(), Value::String("acp".to_string()));
     }
 
-    // fork: runtime-generic access lets init_store use the real plugin store in isolation.
-    pub fn get<R: InitStoreRuntime>(app: &tauri::AppHandle<R>) -> Result<Option<Self>, String> {
-        let store =
-            R::open_settings_store(app).map_err(|e| format!("Failed to get store: {}", e))?;
+    pub fn get(app: &AppHandle) -> Result<Option<Self>, String> {
+        let store = get_store(app, None).map_err(|e| format!("Failed to get store: {}", e))?;
 
         match store.is_empty() {
             true => Ok(None),
@@ -2623,9 +2593,8 @@ impl SettingsStore {
         resolution
     }
 
-    // fork: runtime-generic persistence retains the same save and encryption behavior.
-    pub fn save<R: InitStoreRuntime>(&self, app: &tauri::AppHandle<R>) -> Result<(), String> {
-        let Ok(store) = R::open_settings_store(app) else {
+    pub fn save(&self, app: &AppHandle) -> Result<(), String> {
+        let Ok(store) = get_store(app, None) else {
             return Err("Failed to get store".to_string());
         };
 
@@ -2724,7 +2693,8 @@ fn migrate_timeline_visibility_to_sidebar(
     true
 }
 
-const WINDOWS_TIMELINE_WINDOW_MODE_MIGRATION: &str = "windowsTimelineWindowModeMigrationV1";
+const WINDOWS_TIMELINE_WINDOW_MODE_MIGRATION: &str =
+    "windowsTimelineWindowModeMigrationV1";
 
 /// Move existing Windows installs off the legacy borderless fullscreen overlay.
 ///
@@ -2770,14 +2740,20 @@ fn backfill_default_ai_preset(settings: &mut SettingsStore) -> bool {
     true
 }
 
-// fork: MockRuntime support makes fresh-install policy testable without touching user data.
-pub fn init_store<R: InitStoreRuntime>(app: &tauri::AppHandle<R>) -> Result<SettingsStore, String> {
+fn apply_fresh_install_defaults(settings: &mut SettingsStore, device_id: String) {
+    settings.device_id = device_id;
+    // fork: personal builds require an explicit user opt-in before retention
+    // can delete data, so fresh defaults do not seed localRetentionEnabled.
+    // Do not remove an existing explicit value if this helper is reused.
+}
+
+pub fn init_store(app: &AppHandle) -> Result<SettingsStore, String> {
     println!("Initializing settings store");
 
     // Access errors are not deserialization errors. In particular, the locked
     // encrypted-store path must reach the setup caller so startup aborts before
     // any webview can invoke the plugin's unguarded load/save commands.
-    let store_handle = require_store_access(R::open_settings_store(app))?;
+    let store_handle = require_store_access(get_store(app, None))?;
     let raw_obj = store_handle
         .get("settings")
         .and_then(|raw| raw.as_object().cloned());
@@ -2805,14 +2781,18 @@ pub fn init_store<R: InitStoreRuntime>(app: &tauri::AppHandle<R>) -> Result<Sett
             }
             (
                 store,
-                should_persist_restart_notification_migration || should_persist_ai_preset_backfill,
+                should_persist_restart_notification_migration
+                    || should_persist_ai_preset_backfill,
                 true,
             )
         }
         Ok(None) => {
             is_new_store = true;
             let mut settings = SettingsStore::default();
-            settings.device_id = crate::enterprise::host_identity::new_install_device_id()?;
+            apply_fresh_install_defaults(
+                &mut settings,
+                crate::enterprise::host_identity::new_install_device_id()?,
+            );
             (settings, true, true)
         }
         Err(e) => {
@@ -2925,10 +2905,6 @@ pub fn init_store<R: InitStoreRuntime>(app: &tauri::AppHandle<R>) -> Result<Sett
         }
     }
 
-    // fork: do not seed localRetentionEnabled on a new install. The missing-key
-    // fallback is false, so retention starts only after the user explicitly
-    // enables it in Settings; existing explicit choices remain untouched.
-
     if restore_headed_mode_for_consumer(&mut store, cfg!(feature = "enterprise-build")) {
         tracing::info!(
             "settings migration: restored headed UI and scheduled pipe runs for consumer install"
@@ -2946,7 +2922,9 @@ pub fn init_store<R: InitStoreRuntime>(app: &tauri::AppHandle<R>) -> Result<Sett
         && can_run_settings_migrations
         && migrate_windows_timeline_to_window_mode(&mut store)
     {
-        tracing::info!("settings migration: selected window mode for the Windows timeline overlay");
+        tracing::info!(
+            "settings migration: selected window mode for the Windows timeline overlay"
+        );
         should_save = true;
     }
 
@@ -3388,10 +3366,7 @@ mod tests {
 
     #[test]
     fn shortcut_overlay_anchor_defaults_to_top_center() {
-        assert_eq!(
-            SettingsStore::default().shortcut_overlay_anchor,
-            "top-center"
-        );
+        assert_eq!(SettingsStore::default().shortcut_overlay_anchor, "top-center");
 
         // Settings written before the pill could be pinned have no anchor key.
         let missing: SettingsStore = serde_json::from_value(json!({
@@ -3889,8 +3864,8 @@ mod tests {
         // non-Unknown plan policy is.
         let on_disk: Value = serde_json::from_slice(&std::fs::read(&store_path).unwrap())
             .expect("restored store.bin must parse");
-        let recovered: SettingsStore = serde_json::from_value(on_disk["settings"].clone())
-            .expect("restored settings deserialize");
+        let recovered: SettingsStore =
+            serde_json::from_value(on_disk["settings"].clone()).expect("restored settings deserialize");
         assert_ne!(
             recovered.local_plan_policy(),
             LocalPlanPolicy::Unknown,
@@ -3904,9 +3879,7 @@ mod tests {
             .filter_map(Result::ok)
             .any(|entry| {
                 entry.file_name().to_string_lossy().contains("pre-restore")
-                    && std::fs::read(entry.path())
-                        .map(|b| b == torn)
-                        .unwrap_or(false)
+                    && std::fs::read(entry.path()).map(|b| b == torn).unwrap_or(false)
             });
         assert!(
             preserved,
@@ -4283,7 +4256,9 @@ mod tests {
 
         // Distinct, long, byte-uniform payloads: any interleaving of two
         // writers is trivially detectable, and the size widens the race window.
-        let payloads: Vec<Vec<u8>> = (0..8u8).map(|i| vec![b'a' + i; 256 * 1024]).collect();
+        let payloads: Vec<Vec<u8>> = (0..8u8)
+            .map(|i| vec![b'a' + i; 256 * 1024])
+            .collect();
 
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(payloads.len()));
         let handles: Vec<_> = payloads
@@ -4719,10 +4694,7 @@ mod tests {
             &std::fs::read(&store_path).expect("failed to read pre-restart store"),
         )
         .expect("pre-restart store is invalid JSON");
-        assert_eq!(
-            before.pointer("/settings/autoUpdate"),
-            Some(&Value::Bool(false))
-        );
+        assert_eq!(before.pointer("/settings/autoUpdate"), Some(&Value::Bool(false)));
 
         save_store_to_disk(store.as_ref()).expect("restart persistence failed");
 
@@ -4730,10 +4702,7 @@ mod tests {
             &std::fs::read(&store_path).expect("failed to read persisted store"),
         )
         .expect("persisted store is invalid JSON");
-        assert_eq!(
-            after.pointer("/settings/autoUpdate"),
-            Some(&Value::Bool(true))
-        );
+        assert_eq!(after.pointer("/settings/autoUpdate"), Some(&Value::Bool(true)));
     }
 
     #[test]
@@ -5490,11 +5459,7 @@ mod tests {
                 .and_then(Value::as_bool),
             Some(true)
         );
-        assert!(
-            !round_tripped
-                .to_recording_settings()
-                .enable_semantic_context
-        );
+        assert!(!round_tripped.to_recording_settings().enable_semantic_context);
     }
 
     #[test]
@@ -5687,10 +5652,7 @@ mod tests {
         reencrypt_store_at(&store_path);
 
         let last_good = store_path.with_extension(LAST_GOOD_SUFFIX);
-        assert!(
-            last_good.exists(),
-            "last-good is the plaintext recovery copy"
-        );
+        assert!(last_good.exists(), "last-good is the plaintext recovery copy");
         assert!(store_json_has_presets(&std::fs::read(&last_good).unwrap()));
 
         let now = std::fs::read(&store_path).unwrap();
@@ -5719,51 +5681,28 @@ mod tests {
     }
 
     #[test]
-    fn init_store_does_not_seed_local_retention() {
-        // fork: isolate the process-global app-data directory so this exercises
-        // the real fresh-store initializer without reading a user's settings.
-        const CHILD_DATA_DIR: &str = "SCREENPIPE_TEST_INIT_STORE_DATA_DIR";
-        let Some(data_dir) = std::env::var_os(CHILD_DATA_DIR).map(std::path::PathBuf::from) else {
-            let root = tempfile::tempdir().unwrap();
-            let output = std::process::Command::new(std::env::current_exe().unwrap())
-                .args([
-                    "--exact",
-                    "store::tests::init_store_does_not_seed_local_retention",
-                    "--nocapture",
-                ])
-                .env("SCREENPIPE_DATA_DIR", root.path())
-                .env_remove("SCREENPIPE_ENCRYPT_STORE")
-                .env(CHILD_DATA_DIR, root.path())
-                .output()
-                .unwrap();
-            assert!(
-                output.status.success(),
-                "isolated init_store regression failed:\n{}\n{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr),
-            );
-            return;
-        };
-
-        assert_eq!(crate::config::app_data_dir(), data_dir);
-        let app = tauri::test::mock_builder()
-            .plugin(tauri_plugin_store::Builder::default().build())
-            .build(tauri::test::mock_context(tauri::test::noop_assets()))
-            .unwrap();
-
-        let settings = init_store(app.handle()).expect("fresh settings store should initialize");
-        assert!(!settings.extra.contains_key("localRetentionEnabled"));
-
-        let persisted: Value = serde_json::from_slice(
-            &std::fs::read(data_dir.join("store.bin"))
-                .expect("fresh settings store should be persisted"),
-        )
-        .expect("fresh settings store should remain JSON when encryption is disabled");
-        assert_eq!(
-            persisted.pointer("/settings/localRetentionEnabled"),
-            None,
-            "init_store must not persist an automatic retention opt-in",
+    fn fresh_install_retention_defaults_require_opt_in_and_preserve_explicit_value() {
+        let mut fresh = SettingsStore::default();
+        apply_fresh_install_defaults(&mut fresh, "fresh-device".to_string());
+        assert_eq!(fresh.device_id, "fresh-device");
+        assert!(
+            !fresh.extra.contains_key("localRetentionEnabled"),
+            "fresh installs must not receive an automatic retention opt-in"
         );
+
+        for enabled in [false, true] {
+            let mut explicit = SettingsStore::default();
+            explicit.extra.insert(
+                "localRetentionEnabled".to_string(),
+                Value::Bool(enabled),
+            );
+            apply_fresh_install_defaults(&mut explicit, "other-device".to_string());
+            assert_eq!(
+                explicit.extra.get("localRetentionEnabled"),
+                Some(&Value::Bool(enabled)),
+                "an explicit user preference must be preserved"
+            );
+        }
     }
 
     /// Deep benchmark of the path sampled on 2026-08-26: 200 IPC-style
@@ -5792,7 +5731,8 @@ mod tests {
         }
         let baseline_syncs = baseline_iters as u64;
         baseline_ns.sort_unstable();
-        let baseline_total_ms: f64 = baseline_ns.iter().sum::<u128>() as f64 / 1_000_000.0;
+        let baseline_total_ms: f64 =
+            baseline_ns.iter().sum::<u128>() as f64 / 1_000_000.0;
         let baseline_p50 = percentile(&baseline_ns, 0.50) as f64 / 1_000.0;
         let baseline_p99 = percentile(&baseline_ns, 0.99) as f64 / 1_000.0;
 
@@ -5842,11 +5782,7 @@ mod tests {
         let enc_total_ms: f64 = enc_ns.iter().sum::<u128>() as f64 / 1_000_000.0;
         let enc_p50 = percentile(&enc_ns, 0.50) as f64 / 1_000.0;
         let enc_p99 = percentile(&enc_ns, 0.99) as f64 / 1_000.0;
-        assert_eq!(
-            mtime(&store_path),
-            enc_m,
-            "ciphertext loop must not rewrite"
-        );
+        assert_eq!(mtime(&store_path), enc_m, "ciphertext loop must not rewrite");
 
         eprintln!(
             "\n=== store reencrypt CPU benchmark ===\n\

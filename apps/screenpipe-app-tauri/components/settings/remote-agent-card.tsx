@@ -24,11 +24,16 @@ import { localizeDefinitions } from "@/lib/i18n/definitions";
 // (remote) tab pushes your data to that box. New targets = one entry here; the
 // `screenpipe agent setup` CLI already covers cursor/windsurf too.
 
+// fork: remote copy-paste configs must preserve the personal build's telemetry opt-out.
 const JSON_SNIPPET = `{
   "mcpServers": {
     "screenpipe": {
       "command": "npx",
-      "args": ["-y", "screenpipe-mcp@latest"]
+      "args": ["-y", "screenpipe-mcp@latest"],
+      "env": {
+        "SCREENPIPE_DISABLE_TELEMETRY": "1",
+        "SCREENPIPE_MCP_SENTRY_DISABLED": "1"
+      }
     }
   }
 }
@@ -40,11 +45,18 @@ const YAML_SNIPPET = `mcp_servers:
     args:
       - "-y"
       - screenpipe-mcp@latest
+    env:
+      SCREENPIPE_DISABLE_TELEMETRY: "1"
+      SCREENPIPE_MCP_SENTRY_DISABLED: "1"
 `;
 
 const TOML_SNIPPET = `[mcp_servers.screenpipe]
 command = "npx"
 args = ["-y", "screenpipe-mcp@latest"]
+
+[mcp_servers.screenpipe.env]
+SCREENPIPE_DISABLE_TELEMETRY = "1"
+SCREENPIPE_MCP_SENTRY_DISABLED = "1"
 `;
 
 function skillVariants(skillsDir: string): AgentCardProps["skills"] {

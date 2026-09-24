@@ -480,16 +480,10 @@ pub(crate) fn test_recording_state(capture_intended: bool) -> RecordingState {
 
 pub(crate) fn refresh_history_access_policy(
     policy: &screenpipe_engine::history_access::HistoryAccessPolicy,
-    settings: &SettingsStore,
 ) {
-    policy.set_last_24_hours(history_access_restricted(
-        cfg!(feature = "enterprise-build"),
-        settings.is_free_or_unattributed_user(),
-    ));
-}
-
-fn history_access_restricted(is_enterprise_build: bool, free_or_unattributed: bool) -> bool {
-    !is_enterprise_build && free_or_unattributed
+    // fork: local history belongs to its owner regardless of consumer plan.
+    // Enterprise session authorization is enforced before this local policy.
+    policy.set_last_24_hours(false);
 }
 
 fn capture_intended_now(wants_recording: &AtomicBool) -> bool {
@@ -2427,21 +2421,21 @@ mod recording_access_tests {
 
 #[cfg(test)]
 mod history_access_tests {
-    use super::history_access_restricted;
+    use super::refresh_history_access_policy;
+    use crate::store::SettingsStore;
+    use chrono::{Duration, Utc};
+    use screenpipe_engine::history_access::HistoryAccessPolicy;
 
     #[test]
-    fn consumer_free_and_unattributed_accounts_are_restricted() {
-        assert!(history_access_restricted(false, true));
-    }
+    fn signed_out_refresh_restores_older_local_history() {
+        let policy = HistoryAccessPolicy::last_24_hours();
+        let settings = SettingsStore::default();
+        assert!(settings.is_free_or_unattributed_user());
 
-    #[test]
-    fn verified_paid_consumer_is_unrestricted() {
-        assert!(!history_access_restricted(false, false));
-    }
+        refresh_history_access_policy(&policy);
 
-    #[test]
-    fn enterprise_build_is_unrestricted_without_consumer_plan_truth() {
-        assert!(!history_access_restricted(true, true));
+        assert!(!policy.is_restricted());
+        assert!(policy.allows(Utc::now() - Duration::days(60), Utc::now()));
     }
 }
 

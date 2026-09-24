@@ -251,11 +251,16 @@ async function callActivitySummaryThroughMcp(
         `SCREENPIPE_API_URL = "http://localhost:${api.port}"`,
       );
       expect(codex).toContain('SCREENPIPE_MCP_CLIENT = "codex"');
+      // fork: native MCP setup must keep both reporting opt-outs.
+      expect(codex).toContain('SCREENPIPE_DISABLE_TELEMETRY = "1"');
+      expect(codex).toContain('SCREENPIPE_MCP_SENTRY_DISABLED = "1"');
 
       const claudeCode = JSON.parse(readFileSync(claudeCodeConfig, "utf8"));
       expect(claudeCode.mcpServers.screenpipe.env.SCREENPIPE_MCP_CLIENT).toBe(
         "claude-code",
       );
+      expect(claudeCode.mcpServers.screenpipe.env.SCREENPIPE_DISABLE_TELEMETRY).toBe("1");
+      expect(claudeCode.mcpServers.screenpipe.env.SCREENPIPE_MCP_SENTRY_DISABLED).toBe("1");
 
       const cursor = JSON.parse(readFileSync(cursorConfig, "utf8"));
       expect(cursor.theme).toBe("dark");
@@ -264,6 +269,8 @@ async function callActivitySummaryThroughMcp(
         SCREENPIPE_API_URL: `http://localhost:${api.port}`,
         SCREENPIPE_LOCAL_API_KEY: api.key,
         SCREENPIPE_MCP_CLIENT: "cursor",
+        SCREENPIPE_DISABLE_TELEMETRY: "1",
+        SCREENPIPE_MCP_SENTRY_DISABLED: "1",
       });
 
       const gemini = JSON.parse(readFileSync(geminiConfig, "utf8"));
@@ -273,6 +280,8 @@ async function callActivitySummaryThroughMcp(
         SCREENPIPE_API_URL: `http://localhost:${api.port}`,
         SCREENPIPE_LOCAL_API_KEY: api.key,
         SCREENPIPE_MCP_CLIENT: "gemini",
+        SCREENPIPE_DISABLE_TELEMETRY: "1",
+        SCREENPIPE_MCP_SENTRY_DISABLED: "1",
       });
 
       const runner = JSON.parse(readFileSync(runnerConfig, "utf8"));
@@ -283,6 +292,8 @@ async function callActivitySummaryThroughMcp(
         SCREENPIPE_API_URL: `http://localhost:${api.port}`,
         SCREENPIPE_LOCAL_API_KEY: api.key,
         SCREENPIPE_MCP_CLIENT: "runner",
+        SCREENPIPE_DISABLE_TELEMETRY: "1",
+        SCREENPIPE_MCP_SENTRY_DISABLED: "1",
       });
 
       if (process.platform !== "win32") {

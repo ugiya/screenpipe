@@ -33,7 +33,6 @@ const COVERAGE_SLOP_MS: i64 = 1_000;
 const OBSERVED_WINDOW_MINUTES: i64 = 30;
 const MIN_OBSERVED_OVERLAP_MINUTES: i64 = 2;
 const EMPTY_COMPLETION_PROMPT: &str = "Your previous turn ended after tool execution without a final response. Using the tool results already in this session, return the requested final JSON now. Do not call tools again.";
-const FREE_ACTIVITY_HISTORY_HOURS: i64 = 24;
 /// Marks an error the user has to act on themselves (agent sign-in, missing
 /// CLI). React shows everything after the prefix verbatim.
 const AGENT_ERROR_PREFIX: &str = "activity_agent_error:";
@@ -468,14 +467,14 @@ fn activity_access_range(
     start: DateTime<Utc>,
     end: DateTime<Utc>,
     now: DateTime<Utc>,
-    restricted: bool,
-) -> Option<(DateTime<Utc>, DateTime<Utc>)> {
-    if !restricted {
-        return (start < end).then_some((start, end));
-    }
-    let start = start.max(now - chrono::Duration::hours(FREE_ACTIVITY_HISTORY_HOURS));
+    policy: &screenpipe_engine::history_access::HistoryAccessPolicy,
+) -> Option<(DateTime<Utc>, DateTime<Utc>, bool)> {
+    let Some(cutoff) = policy.cutoff(now) else {
+        return (start < end).then_some((start, end, false));
+    };
+    let start = start.max(cutoff);
     let end = end.min(now);
-    (start < end).then_some((start, end))
+    (start < end).then_some((start, end, true))
 }
 
 fn restricted_history_in_range(
@@ -518,15 +517,6 @@ fn restricted_history_in_range(
         })
         .collect();
     PersistedActivityHistory { entries, coverage }
-}
-
-fn activity_history_is_restricted(app: &AppHandle) -> bool {
-    let settings = SettingsStore::get(app).ok().flatten().unwrap_or_default();
-    settings_restrict_activity_history(&settings, cfg!(feature = "enterprise-build"))
-}
-
-fn settings_restrict_activity_history(settings: &SettingsStore, is_enterprise_build: bool) -> bool {
-    !is_enterprise_build && settings.is_free_or_unattributed_user()
 }
 
 pub(crate) fn provider_config(
@@ -1684,8 +1674,12 @@ pub async fn get_activity_history(
     end: String,
 ) -> Result<PersistedActivityHistory, String> {
     let (start, end) = requested_range(start, end)?;
-    let restricted = activity_history_is_restricted(&app);
-    let Some((start, end)) = activity_access_range(start, end, Utc::now(), restricted) else {
+    let history_access = app.state::<RecordingState>().history_access.clone();
+    // fork: Activity History follows the shared local-history policy, preserving
+    // authoritative enterprise restrictions without consumer plan gates.
+    let Some((start, end, restricted)) =
+        activity_access_range(start, end, Utc::now(), &history_access)
+    else {
         return Ok(PersistedActivityHistory::default());
     };
     let history = history_in_range(read_all(&app)?, start, end);
@@ -1706,8 +1700,11 @@ pub async fn generate_activity_history(
     idempotency_key: String,
 ) -> Result<PersistedActivityHistory, String> {
     let (start, end) = requested_range(start, end)?;
-    let restricted = activity_history_is_restricted(&app);
-    let Some((start, end)) = activity_access_range(start, end, Utc::now(), restricted) else {
+    let history_access = app.state::<RecordingState>().history_access.clone();
+    // fork: generation uses the same authoritative snapshot as history reads.
+    let Some((start, end, restricted)) =
+        activity_access_range(start, end, Utc::now(), &history_access)
+    else {
         return Ok(PersistedActivityHistory::default());
     };
     let history = generate(
@@ -2314,28 +2311,31 @@ mod tests {
     }
 
     #[test]
-    fn activity_access_range_limits_free_and_unattributed_users_to_latest_day() {
+    fn activity_access_range_honors_authoritative_restrictions() {
         let now = parse_time("2026-08-24T12:00:00Z").unwrap();
         let requested_start = parse_time("2026-08-17T12:00:00Z").unwrap();
         let requested_end = parse_time("2026-08-25T12:00:00Z").unwrap();
+        let restricted = screenpipe_engine::history_access::HistoryAccessPolicy::last_24_hours();
+        let unrestricted = screenpipe_engine::history_access::HistoryAccessPolicy::unrestricted();
 
         assert_eq!(
-            activity_access_range(requested_start, requested_end, now, true),
+            activity_access_range(requested_start, requested_end, now, &restricted),
             Some((
                 parse_time("2026-08-23T12:00:00Z").unwrap(),
                 parse_time("2026-08-24T12:00:00Z").unwrap(),
+                true,
             ))
         );
         assert_eq!(
-            activity_access_range(requested_start, requested_end, now, false),
-            Some((requested_start, requested_end))
+            activity_access_range(requested_start, requested_end, now, &unrestricted),
+            Some((requested_start, requested_end, false))
         );
         assert_eq!(
             activity_access_range(
                 requested_start,
                 parse_time("2026-08-20T12:00:00Z").unwrap(),
                 now,
-                true,
+                &restricted,
             ),
             None
         );
@@ -2463,23 +2463,59 @@ mod tests {
     }
 
     #[test]
-    fn only_the_enterprise_build_bypasses_missing_consumer_plan_evidence() {
-        let mut enterprise = SettingsStore::default();
-        enterprise.user.enterprise_account = Some(json!({
-            "org_name": "Acme",
-            "role": "member",
-            "requires_enterprise_app": true
-        }));
+    fn activity_history_uses_the_shared_history_policy_in_every_build() {
+        let unrestricted = screenpipe_engine::history_access::HistoryAccessPolicy::unrestricted();
+        let restricted = screenpipe_engine::history_access::HistoryAccessPolicy::last_24_hours();
+        let now = parse_time("2026-08-24T12:00:00Z").unwrap();
+        let start = now - chrono::Duration::days(7);
 
-        assert!(settings_restrict_activity_history(&enterprise, false));
-        assert!(!settings_restrict_activity_history(
-            &SettingsStore::default(),
-            true,
-        ));
-        assert!(settings_restrict_activity_history(
-            &SettingsStore::default(),
-            false,
-        ));
+        assert_eq!(
+            activity_access_range(start, now, now, &unrestricted),
+            Some((start, now, false))
+        );
+        assert_eq!(
+            activity_access_range(start, now, now, &restricted),
+            Some((now - chrono::Duration::hours(24), now, true))
+        );
+    }
+
+    #[test]
+    fn signed_out_consumer_keeps_the_full_generation_range_and_old_history() {
+        let settings = SettingsStore::default();
+        assert!(settings.is_free_or_unattributed_user());
+        let policy = screenpipe_engine::history_access::HistoryAccessPolicy::unrestricted();
+        let now = parse_time("2026-08-24T12:00:00Z").unwrap();
+        let requested_start = parse_time("2026-08-17T12:00:00Z").unwrap();
+        let requested_end = now;
+        let (generation_start, generation_end, restricted) =
+            activity_access_range(requested_start, requested_end, now, &policy)
+                .expect("the full signed-out range remains available");
+        let stored = PersistedActivityHistory {
+            entries: vec![work_entry(
+                "older-signed-out-work",
+                "2026-08-18T10:00:00Z",
+                "2026-08-18T11:00:00Z",
+            )],
+            coverage: vec![ActivityHistoryCoverage {
+                start: "2026-08-17T12:00:00Z".to_string(),
+                end: "2026-08-24T12:00:00Z".to_string(),
+            }],
+        };
+
+        let visible = history_in_range(stored, generation_start, generation_end);
+
+        assert_eq!(
+            (generation_start, generation_end),
+            (requested_start, requested_end)
+        );
+        assert!(!restricted);
+        assert_eq!(visible.entries.len(), 1);
+        assert_eq!(visible.entries[0].id, "older-signed-out-work");
+        assert_eq!(visible.entries[0].evidence.len(), 1);
+        assert_eq!(visible.entries[0].evidence[0].frame_id, Some(42));
+        assert_eq!(visible.coverage.len(), 1);
+        assert_eq!(visible.coverage[0].start, "2026-08-17T12:00:00Z");
+        assert_eq!(visible.coverage[0].end, "2026-08-24T12:00:00Z");
     }
 
     #[test]

@@ -1395,7 +1395,6 @@ async fn main() {
 
             crate::recording::refresh_history_access_policy(
                 &app.state::<RecordingState>().history_access,
-                &store,
             );
 
             // Set Chinese HuggingFace mirror early — before any model downloads

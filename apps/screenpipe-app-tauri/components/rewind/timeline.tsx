@@ -119,6 +119,7 @@ export default function Timeline({ embedded = false }: { embedded?: boolean }) {
 	);
 	const historyAccessRestricted = useAuthoritativeTimelineHistoryAccess(
 		locallyRestrictedHistory,
+		enterpriseBuild.resolved && !enterpriseBuild.isEnterprise,
 	);
 	const { health } = useHealthCheck();
 	const [currentIndex, setCurrentIndex] = useState(0);

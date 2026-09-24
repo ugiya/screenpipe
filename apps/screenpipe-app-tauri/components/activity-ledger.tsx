@@ -64,12 +64,9 @@ import {
 } from "@/lib/frame-thumbnails";
 import { presentQuotaError } from "@/lib/chat/quota-errors";
 import { showChatWithPrefill } from "@/lib/chat-utils";
-import {
-  isFreeOrUnattributedUser,
-  type AppUser,
-} from "@/lib/app-entitlement";
 import { useSettings } from "@/lib/hooks/use-settings";
 import { useEnterpriseBuildStatus } from "@/lib/hooks/use-is-enterprise-build";
+import { useAuthoritativeTimelineHistoryAccessStatus } from "@/lib/hooks/use-timeline-cache";
 import { useTauriEvent } from "@/lib/hooks/use-tauri-event";
 import { useTimelineStore } from "@/lib/hooks/use-timeline-store";
 import { getAppServerBaseUrl } from "@/lib/notifications/app-server";
@@ -306,15 +303,10 @@ export function rangeForPreset(
 
 export function effectiveActivityRange(
   range: TimeRange | null,
-  user: AppUser | null | undefined,
+  historyAccessRestricted: boolean,
   now: Date,
-  isEnterpriseBuild = false,
 ): TimeRange | null {
-  return effectiveActivityRangeForAccess(
-    range,
-    !isEnterpriseBuild && isFreeOrUnattributedUser(user),
-    now,
-  );
+  return effectiveActivityRangeForAccess(range, historyAccessRestricted, now);
 }
 
 function effectiveActivityRangeForAccess(
@@ -1442,10 +1434,13 @@ export function ActivityLedger({
     settings.activitiesEnabled === undefined && historyCoverage.length > 0;
   const activitiesEnabled =
     settings.activitiesEnabled ?? legacyActivitiesEnabled;
-  const activityUser = settings.user as AppUser | null | undefined;
+  // fork: consumer history is unrestricted; enterprise authorization remains
+  // authoritative in the native policy shared with Timeline.
   const activityHistoryRestricted =
-    !enterpriseBuild.isEnterprise &&
-    isFreeOrUnattributedUser(activityUser);
+    useAuthoritativeTimelineHistoryAccessStatus(
+      false,
+      enterpriseBuild.resolved && !enterpriseBuild.isEnterprise,
+    ) === true;
   useEffect(() => {
     if (
       activityHistoryRestricted &&
@@ -1497,17 +1492,15 @@ export function ActivityLedger({
     const now = new Date();
     return effectiveActivityRange(
       rangeForPreset(preset, now, customStart, customEnd),
-      settings.user as AppUser | null | undefined,
+      activityHistoryRestricted,
       now,
-      enterpriseBuild.isEnterprise,
     );
   }, [
+    activityHistoryRestricted,
     customEnd,
     customStart,
-    enterpriseBuild.isEnterprise,
     preset,
     recentEligibilityTick,
-    settings.user,
   ]);
   const recentActivityAvailable = Boolean(
     recentRange && canAddRecentActivity(recentRange, historyCoverage),
@@ -1805,9 +1798,8 @@ export function ActivityLedger({
       const now = new Date();
       const clickedRange = effectiveActivityRange(
         rangeForPreset(preset, now, customStart, customEnd),
-        settings.user as AppUser | null | undefined,
+        activityHistoryRestricted,
         now,
-        enterpriseBuild.isEnterprise,
       );
       if (!clickedRange) return;
       void generateHistory(clickedRange, source, clickedRange);
@@ -1815,10 +1807,9 @@ export function ActivityLedger({
     [
       customEnd,
       customStart,
-      enterpriseBuild.isEnterprise,
+      activityHistoryRestricted,
       generateHistory,
       preset,
-      settings.user,
     ],
   );
 
@@ -1826,9 +1817,8 @@ export function ActivityLedger({
     const now = new Date();
     const clickedRange = effectiveActivityRange(
       rangeForPreset(preset, now, customStart, customEnd),
-      settings.user as AppUser | null | undefined,
+      activityHistoryRestricted,
       now,
-      enterpriseBuild.isEnterprise,
     );
     if (!clickedRange) return;
     try {
@@ -1843,10 +1833,9 @@ export function ActivityLedger({
   }, [
     customEnd,
     customStart,
-    enterpriseBuild.isEnterprise,
+    activityHistoryRestricted,
     generateHistory,
     preset,
-    settings.user,
     updateSettings,
   ]);
 
@@ -1854,9 +1843,8 @@ export function ActivityLedger({
     const now = new Date();
     const clickedRange = effectiveActivityRange(
       rangeForPreset(preset, now, customStart, customEnd),
-      settings.user as AppUser | null | undefined,
+      activityHistoryRestricted,
       now,
-      enterpriseBuild.isEnterprise,
     );
     const clickedHistoryRange = clickedRange
       ? nextActivityHistoryRange(clickedRange, historyCoverage, 0)
@@ -1874,17 +1862,16 @@ export function ActivityLedger({
     }
     void generateHistory(clickedHistoryRange, "refresh", clickedRange);
   }, [
+    activityHistoryRestricted,
     cacheReady,
     customEnd,
     customStart,
-    enterpriseBuild.isEnterprise,
     generateHistory,
     historyCoverage,
     historyLoading,
     invalidRange,
     loading,
     preset,
-    settings.user,
   ]);
 
   const recentActivityDisabled =

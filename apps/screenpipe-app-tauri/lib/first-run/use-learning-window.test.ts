@@ -10,6 +10,11 @@ const mocks = vi.hoisted(() => ({
   setOnboardingStep: vi.fn(async () => undefined),
   capture: vi.fn(),
   fetchRecentActivity: vi.fn().mockResolvedValue(null),
+  enterpriseBuildStatus: {
+    isEnterprise: false,
+    resolved: true,
+    error: false,
+  },
 }));
 
 vi.mock("posthog-js", () => ({ default: { capture: mocks.capture } }));
@@ -24,6 +29,9 @@ vi.mock("@/lib/utils/tauri", () => ({
 }));
 vi.mock("@/lib/first-run/recent-activity", () => ({
   fetchRecentActivity: mocks.fetchRecentActivity,
+}));
+vi.mock("@/lib/hooks/use-is-enterprise-build", () => ({
+  useEnterpriseBuildStatus: () => mocks.enterpriseBuildStatus,
 }));
 
 import { useLearningWindow } from "./use-learning-window";
@@ -71,6 +79,9 @@ beforeEach(() => {
   window.localStorage.clear();
   vi.clearAllMocks();
   mocks.fetchRecentActivity.mockResolvedValue(null);
+  mocks.enterpriseBuildStatus.isEnterprise = false;
+  mocks.enterpriseBuildStatus.resolved = true;
+  mocks.enterpriseBuildStatus.error = false;
 });
 
 describe("native first-run summary projection", () => {
@@ -110,7 +121,7 @@ describe("native first-run summary projection", () => {
     expect(readLearningWindow().phase).toBe("done");
   });
 
-  it("does not transition a persisted trial summary into a paywall", async () => {
+  it("does not transition a persisted consumer trial summary into a paywall", async () => {
     mocks.getOnboardingStatus.mockResolvedValue(
       nativeStatus(
         "ready",
@@ -130,5 +141,35 @@ describe("native first-run summary projection", () => {
       expect.anything(),
     );
     expect(result.current.activationState).toBe("inactive");
+  });
+
+  it("preserves the enterprise trial summary projection and paywall transition", async () => {
+    mocks.enterpriseBuildStatus.isEnterprise = true;
+    mocks.getOnboardingStatus.mockResolvedValue(
+      nativeStatus(
+        "ready",
+        "first-run-native-chat",
+        "trial-activation-v1-summary",
+      ),
+    );
+    const { result } = renderHook(() => useLearningWindow());
+
+    await waitFor(() => expect(result.current.phase).toBe("ready"));
+    expect(result.current.activationState).toBe("summary");
+    await act(async () => result.current.markSummaryRendered());
+
+    expect(mocks.setOnboardingStep).toHaveBeenCalledOnce();
+    expect(mocks.setOnboardingStep).toHaveBeenCalledWith(
+      "trial-activation-v1-paywall",
+    );
+    expect(mocks.capture).toHaveBeenCalledWith(
+      "first_run_summary_rendered",
+      {
+        experiment: "first-summary-card-trial-v1",
+        variant: "summary_first",
+        eligible_new_install: true,
+      },
+    );
+    expect(result.current.activationState).toBe("paywall");
   });
 });

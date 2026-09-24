@@ -2181,6 +2181,70 @@ mod thumbnail_tests {
         }
     }
 
+    #[tokio::test]
+    async fn consumer_unrestricted_policy_serves_frame_older_than_24_hours() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let snapshot_path = temp_dir.path().join("old-consumer-frame.jpg");
+        RgbImage::from_pixel(2, 2, Rgb([20, 40, 60]))
+            .save(&snapshot_path)
+            .unwrap();
+        let db = Arc::new(
+            DatabaseManager::new("sqlite::memory:", Default::default())
+                .await
+                .unwrap(),
+        );
+        let frame_id = db
+            .insert_snapshot_frame(
+                "consumer-monitor",
+                Utc::now() - chrono::Duration::days(30),
+                snapshot_path.to_str().unwrap(),
+                Some("Finder"),
+                Some("Old local history"),
+                None,
+                true,
+                Some("test"),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let audio_manager = Arc::new(
+            AudioManagerBuilder::new()
+                .is_disabled(true)
+                .output_path(temp_dir.path().join("audio"))
+                .build(db.clone())
+                .await
+                .unwrap(),
+        );
+        let server = crate::server::SCServer::new(
+            db,
+            SocketAddr::from(([127, 0, 0, 1], 0)),
+            temp_dir.path().to_path_buf(),
+            false,
+            true,
+            audio_manager,
+            false,
+            "balanced".to_string(),
+        );
+        assert!(!server.history_access.is_restricted());
+        let app = server.create_router().await;
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/frames/{frame_id}?fallback=false"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
     fn preview_query() -> FramePreviewSamplesQuery {
         FramePreviewSamplesQuery {
             start_time: "2026-08-20T10:00:00Z".parse().unwrap(),

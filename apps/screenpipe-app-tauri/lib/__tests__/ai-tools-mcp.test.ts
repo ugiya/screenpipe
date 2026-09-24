@@ -27,6 +27,10 @@ const tauriMock = vi.hoisted(() => ({
     { status: "ok"; data: string } | { status: "error"; error: string }
   >>(),
   grokbotConnection: vi.fn(),
+  bunCheck: vi.fn(async () => ({
+    status: "ok" as const,
+    data: { available: true, path: "/app/bun" },
+  })),
   setAiToolAutoConnectOptOut: vi.fn(async () => ({ status: "ok", data: null })),
 }));
 
@@ -82,10 +86,7 @@ vi.mock("@/lib/utils/tauri", () => ({
   commands: {
     resolveAiToolConfigPath: tauriMock.resolveAiToolConfigPath,
     getLocalApiConfig: vi.fn(async () => ({ key: "sp-test", port: 3030, auth_enabled: true })),
-    bunCheck: vi.fn(async () => ({
-      status: "ok",
-      data: { available: true, path: "/app/bun" },
-    })),
+    bunCheck: tauriMock.bunCheck,
     setAiToolAutoConnectOptOut: tauriMock.setAiToolAutoConnectOptOut,
     grokbotConnection: tauriMock.grokbotConnection,
   },
@@ -121,9 +122,12 @@ import {
 const CURSOR = "/Users/test/.cursor/mcp.json";
 const CLAUDE_DESKTOP = "/Users/test/Library/Application Support/Claude/claude_desktop_config.json";
 const CLAUDE_CODE = "/Users/test/.claude.json";
+const CODEX = "/Users/test/.codex/config.toml";
 const HERMES = "/Users/test/.hermes/config.yaml";
+const OPENCLAW = "/Users/test/.openclaw/openclaw.json";
 const RUNNER = "/Users/test/.runner/mcp.json";
 const GEMINI = "/Users/test/.gemini/settings.json";
+const WINDSURF = "/Users/test/.codeium/windsurf/mcp_config.json";
 
 const backupsOf = (path: string) =>
   Array.from(fsMock.files.keys()).filter((p) => p.startsWith(`${path}.screenpipe-backup-`));
@@ -140,6 +144,11 @@ beforeEach(() => {
   fsMock.forbiddenDirectories.clear();
   skillsMock.installExternalAgentSkills.mockClear();
   skillsMock.removeExternalAgentSkills.mockClear();
+  tauriMock.bunCheck.mockReset();
+  tauriMock.bunCheck.mockResolvedValue({
+    status: "ok",
+    data: { available: true, path: "/app/bun" },
+  });
   tauriMock.setAiToolAutoConnectOptOut.mockClear();
 });
 
@@ -214,6 +223,8 @@ describe("safe config IO", () => {
     expect(config.mcpServers.screenpipe.command).toBe("/app/bun");
     expect(config.mcpServers.screenpipe.env.SCREENPIPE_LOCAL_API_KEY).toBe("sp-test");
     expect(config.mcpServers.screenpipe.env.SCREENPIPE_MCP_CLIENT).toBe("cursor");
+    expect(config.mcpServers.screenpipe.env.SCREENPIPE_DISABLE_TELEMETRY).toBe("1");
+    expect(config.mcpServers.screenpipe.env.SCREENPIPE_MCP_SENTRY_DISABLED).toBe("1");
     expect(backupsOf(CURSOR)).toHaveLength(1);
     expect(fsMock.files.get(backupsOf(CURSOR)[0])).toBe(seeded);
     expect(tmpsOf(CURSOR)).toHaveLength(0);
@@ -457,8 +468,44 @@ describe("transactional connect / disconnect", () => {
     expect(mcp.command).toBe("/app/bun");
     expect(skillsMock.installExternalAgentSkills).toHaveBeenCalledWith("cursor");
     expect(skillsMock.removeExternalAgentSkills).not.toHaveBeenCalled();
-    expect(JSON.parse(fsMock.files.get(CURSOR)!).mcpServers.screenpipe).toBeTruthy();
+    const written = JSON.parse(fsMock.files.get(CURSOR)!).mcpServers.screenpipe;
+    expect(written.env.SCREENPIPE_DISABLE_TELEMETRY).toBe("1");
+    expect(written.env.SCREENPIPE_MCP_SENTRY_DISABLED).toBe("1");
     expect(tauriMock.setAiToolAutoConnectOptOut).toHaveBeenCalledWith("cursor", false);
+  });
+
+  it.each([
+    ["claude", CLAUDE_DESKTOP],
+    ["claude-code", CLAUDE_CODE],
+    ["codex", CODEX],
+    ["cursor", CURSOR],
+    ["gemini", GEMINI],
+    ["openclaw", OPENCLAW],
+    ["hermes", HERMES],
+    ["runner", RUNNER],
+    ["windsurf", WINDSURF],
+  ] as const)("writes telemetry opt-outs through the %s Settings connect path", async (tool, path) => {
+    await connectAiTool(tool);
+
+    const written = fsMock.files.get(path);
+    expect(written).toContain("SCREENPIPE_DISABLE_TELEMETRY");
+    expect(written).toContain("SCREENPIPE_MCP_SENTRY_DISABLED");
+    expect(written).toContain('"1"');
+  });
+
+  it("writes telemetry opt-outs when Settings connect falls back to npx", async () => {
+    tauriMock.bunCheck.mockResolvedValue({
+      status: "ok",
+      data: { available: false, path: null },
+    });
+
+    await connectAiTool("cursor");
+
+    const written = JSON.parse(fsMock.files.get(CURSOR)!).mcpServers.screenpipe;
+    expect(written.command).toBe("npx");
+    expect(written.args).toEqual(["-y", "screenpipe-mcp@latest"]);
+    expect(written.env.SCREENPIPE_DISABLE_TELEMETRY).toBe("1");
+    expect(written.env.SCREENPIPE_MCP_SENTRY_DISABLED).toBe("1");
   });
 
   it("installs and removes Gemini's user-scoped skills with its MCP entry", async () => {
